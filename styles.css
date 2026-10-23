@@ -1,4 +1,4 @@
-/* Темы оформления: Midnight (по умолчанию), Daylight (светлая), Emerald (графитово-изумрудная) */
+/* Темы оформления: Midnight (тёмная) и Daylight (светлая), плюс системный авторежим */
 :root,
 [data-theme="midnight"] {
   --bg-app: #090d16;
@@ -30,8 +30,6 @@
   --bg-elevated: #f8fafc;
   --bg-input: #f1f5f9;
   --bg-hover: rgba(15, 23, 42, 0.05);
-  --text-main: #0f172a;
-  --text-muted: #64748b;
   --accent: #2563eb;
   --accent-soft: rgba(37, 99, 235, 0.12);
   --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
@@ -39,34 +37,13 @@
   --bubble-own-text: #ffffff;
   --bubble-other: #ffffff;
   --bubble-other-text: #0f172a;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
   --border: rgba(15, 23, 42, 0.09);
   --header-bg: rgba(255, 255, 255, 0.88);
   --danger: #dc2626;
   --success: #059669;
   --warning: #d97706;
-}
-
-[data-theme="emerald"] {
-  --bg-app: #060c0a;
-  --bg-sidebar: #0c1512;
-  --bg-chat: #080f0d;
-  --bg-elevated: #13221d;
-  --bg-input: #101c18;
-  --bg-hover: rgba(16, 185, 129, 0.08);
-  --text-main: #ecfdf5;
-  --text-muted: #86a397;
-  --accent: #10b981;
-  --accent-soft: rgba(16, 185, 129, 0.16);
-  --accent-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  --bubble-own: linear-gradient(135deg, #059669 0%, #047857 100%);
-  --bubble-own-text: #ffffff;
-  --bubble-other: #12201b;
-  --bubble-other-text: #ecfdf5;
-  --border: rgba(255, 255, 255, 0.075);
-  --header-bg: rgba(12, 21, 18, 0.88);
-  --danger: #ef4444;
-  --success: #10b981;
-  --warning: #f59e0b;
 }
 
 * {
@@ -107,7 +84,7 @@ body {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(5, 8, 15, 0.72);
+  background: rgba(5, 8, 15, 0.76);
   backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
@@ -238,7 +215,6 @@ body {
   border-color: var(--accent);
 }
 
-/* Индикатор надёжности пароля */
 .pwd-meter {
   margin-top: 8px;
   padding: 10px 12px;
@@ -360,6 +336,11 @@ body {
   background: var(--bg-hover);
 }
 
+.avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
 .avatar {
   width: 42px;
   height: 42px;
@@ -381,6 +362,17 @@ body {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.online-dot {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--success);
+  border: 2px solid var(--bg-sidebar);
 }
 
 .profile-text {
@@ -429,7 +421,6 @@ body {
   color: var(--text-main);
 }
 
-/* Переключатель 3 тем */
 .theme-pills {
   display: flex;
   gap: 6px;
@@ -438,7 +429,7 @@ body {
 
 .theme-pill {
   flex: 1;
-  padding: 8px 10px;
+  padding: 8px 8px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg-input);
@@ -585,6 +576,11 @@ body {
   margin-top: 2px;
 }
 
+.typing-highlight {
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
 .empty-sidebar {
   padding: 32px 18px;
   text-align: center;
@@ -674,6 +670,16 @@ body {
   gap: 6px;
 }
 
+.header-status.online {
+  color: var(--success);
+  font-weight: 500;
+}
+
+.header-status.typing {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .e2e-badge {
   display: inline-flex;
   align-items: center;
@@ -742,6 +748,13 @@ body {
   position: relative;
 }
 
+.msg-bubble.circle-bubble {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 2px 0;
+}
+
 .msg-row.own .msg-bubble {
   background: var(--bubble-own);
   color: var(--bubble-own-text);
@@ -775,6 +788,83 @@ body {
   object-fit: cover;
 }
 
+/* Кружочки (видеосообщения как в Telegram) */
+.video-note-wrap {
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  overflow: hidden;
+  position: relative;
+  border: 3px solid var(--accent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  background: #000;
+}
+
+.video-note-wrap video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.video-note-badge {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+/* Карточка прикреплённого файла / документа */
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.18);
+  text-decoration: none;
+  color: inherit;
+  min-width: 210px;
+  margin-bottom: 2px;
+}
+
+.file-icon-box {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.file-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-sub {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* Кастомный аудиоплеер голосовых */
 .voice-player {
   display: flex;
   align-items: center;
@@ -840,7 +930,7 @@ body {
 
 .msg-action-link {
   cursor: pointer;
-  opacity: 0.7;
+  opacity: 0.75;
   font-size: 11px;
 }
 
@@ -861,12 +951,12 @@ body {
 }
 
 .composer {
-  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   background: var(--bg-sidebar);
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .composer-input {
@@ -878,6 +968,7 @@ body {
   padding: 11px 16px;
   font-size: 15px;
   outline: none;
+  min-width: 0;
 }
 
 .composer-input:focus {
@@ -885,8 +976,8 @@ body {
 }
 
 .circle-action-btn {
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   border: none;
   background: var(--accent-gradient);
@@ -928,6 +1019,26 @@ body {
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+/* Модальное окно записи Видео-кружочка */
+.video-circle-recorder {
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 4px solid var(--danger);
+  margin: 14px auto;
+  background: #000;
+  position: relative;
+  box-shadow: 0 0 35px rgba(239, 68, 68, 0.4);
+}
+
+.video-circle-recorder video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
 }
 
 .member-picker {

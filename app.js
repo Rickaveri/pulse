@@ -1,4 +1,4 @@
-// Pulse Messenger — Защищённый мессенджер (AES-256-GCM E2EE, поиск по @username и телефону, 3 темы, фото-аватарки)
+// Pulse Messenger — Полная версия (AES-256 E2EE, Онлайн/Был в сети, Индикатор «печатает...», Звук, Видеокружочки, Любые файлы, @username и телефон)
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -33,6 +33,7 @@
   const profileModal = document.getElementById('profileModal');
   const myProfileTrigger = document.getElementById('myProfileTrigger');
   const editProfileBtn = document.getElementById('editProfileBtn');
+  const soundToggleBtn = document.getElementById('soundToggleBtn');
   const editAvatarPreview = document.getElementById('editAvatarPreview');
   const avatarFileInput = document.getElementById('avatarFileInput');
   const uploadAvatarBtn = document.getElementById('uploadAvatarBtn');
@@ -43,6 +44,14 @@
   const saveProfileBtn = document.getElementById('saveProfileBtn');
   const closeProfileBtn = document.getElementById('closeProfileBtn');
   const themePills = Array.from(document.querySelectorAll('[data-set-theme]'));
+
+  // DOM: Видеокружочки
+  const videoCircleModal = document.getElementById('videoCircleModal');
+  const videoCircleBtn = document.getElementById('videoCircleBtn');
+  const videoCirclePreview = document.getElementById('videoCirclePreview');
+  const videoCircleTimer = document.getElementById('videoCircleTimer');
+  const sendVideoCircleBtn = document.getElementById('sendVideoCircleBtn');
+  const cancelVideoCircleBtn = document.getElementById('cancelVideoCircleBtn');
 
   // DOM: Группы, карточка собеседника и E2EE
   const groupModal = document.getElementById('groupModal');
@@ -83,6 +92,7 @@
   const activeChatView = document.getElementById('activeChatView');
   const mobileBackBtn = document.getElementById('mobileBackBtn');
   const activeRoomAvatar = document.getElementById('activeRoomAvatar');
+  const activeRoomOnlineDot = document.getElementById('activeRoomOnlineDot');
   const activeRoomTitle = document.getElementById('activeRoomTitle');
   const activeRoomStatus = document.getElementById('activeRoomStatus');
   const messagesViewport = document.getElementById('messagesViewport');
@@ -94,6 +104,8 @@
 
   const photoInput = document.getElementById('photoInput');
   const attachPhotoBtn = document.getElementById('attachPhotoBtn');
+  const docInput = document.getElementById('docInput');
+  const attachDocBtn = document.getElementById('attachDocBtn');
   const messageInput = document.getElementById('messageInput');
   const recordingBar = document.getElementById('recordingBar');
   const recordingTimer = document.getElementById('recordingTimer');
@@ -109,7 +121,7 @@
   let supabaseClient = null;
   let realtimeChannel = null;
 
-  let currentUser = null; // { id, email, display_name, username, phone, avatar_url, bio, color }
+  let currentUser = null;
   let pendingAvatarUrl = null;
   let allProfiles = [];
   let myRooms = [];
@@ -117,11 +129,25 @@
   let roomMessages = [];
   let replyToMsg = null;
 
+  // Онлайн-присутствие и индикатор «печатает...»
+  const onlineUserIds = new Set();
+  const typingByRoom = new Map(); // roomId -> { name, action, expiresAt }
+  let lastTypingBroadcastAt = 0;
+  let soundEnabled = localStorage.getItem('pulse_sound') !== 'off';
+
+  // Аудио и видеозапись
   let mediaRecorder = null;
   let audioChunks = [];
   let recordStartTime = 0;
   let recordInterval = null;
   let recordCanceled = false;
+
+  let videoRecorder = null;
+  let videoStream = null;
+  let videoChunks = [];
+  let videoCanceled = false;
+  let videoStartTime = 0;
+  let videoTimerInterval = null;
 
   // 1. Управление темой: Системная (system), Тёмная (midnight) и Светлая (daylight)
   const systemLightQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
@@ -155,7 +181,57 @@
   });
   applyTheme(localStorage.getItem('pulse_theme') || 'system');
 
-  // 2. Строгая проверка надёжности пароля
+  // 2. Звуковой сигнал при новом сообщении (Web Audio API)
+  function updateSoundButtonUI() {
+    if (!soundToggleBtn) return;
+    soundToggleBtn.style.opacity = soundEnabled ? '1' : '0.45';
+    soundToggleBtn.title = soundEnabled ? 'Звук уведомлений включён' : 'Звук уведомлений выключен';
+  }
+  updateSoundButtonUI();
+
+  if (soundToggleBtn) {
+    soundToggleBtn.addEventListener('click', () => {
+      soundEnabled = !soundEnabled;
+      localStorage.setItem('pulse_sound', soundEnabled ? 'on' : 'off');
+      updateSoundButtonUI();
+      if (soundEnabled) playNotificationSound();
+    });
+  }
+
+  function playNotificationSound() {
+    if (!soundEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc1.type = 'sine';
+      osc2.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now); // D5
+      osc1.frequency.setValueAtTime(880, now + 0.09); // A5
+      osc2.frequency.setValueAtTime(293.66, now);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.14, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + 0.29);
+      osc2.stop(now + 0.29);
+    } catch (e) {}
+  }
+
+  // 3. Строгая проверка надёжности пароля
   function evaluatePasswordStrength(pwd) {
     const hasLen = pwd.length >= 8;
     const hasCase = /[a-zа-яё]/.test(pwd) && /[A-ZА-ЯЁ]/.test(pwd);
@@ -196,7 +272,7 @@
     });
   });
 
-  // 3. Сквозное шифрование AES-256-GCM (Web Crypto API)
+  // 4. Сквозное шифрование AES-256-GCM (Web Crypto API)
   const cryptoKeyCache = new Map();
 
   function getRoomCustomSecret(roomId) {
@@ -257,7 +333,6 @@
       const cipherB64 = uint8ToBase64(new Uint8Array(cipherBuf));
       return `ENC1:${ivB64}:${cipherB64}`;
     } catch (e) {
-      console.error('Ошибка шифрования:', e);
       return plainText;
     }
   }
@@ -294,7 +369,7 @@
     return bytes;
   }
 
-  // 4. Упаковка и распаковка расширенного профиля (username, phone, avatar_url, bio) в avatar_color
+  // 5. Упаковка и распаковка профиля
   function packProfileMeta(meta) {
     return JSON.stringify({
       c: meta.color || '#6366f1',
@@ -321,7 +396,8 @@
           phone: normalizePhone(parsed.p || ''),
           avatar_url: parsed.a || '',
           bio: parsed.b || '',
-          color: parsed.c || '#6366f1'
+          color: parsed.c || '#6366f1',
+          last_seen: rawProfile.last_seen || null
         };
       } catch (e) {}
     }
@@ -335,7 +411,8 @@
       phone: '',
       avatar_url: '',
       bio: '',
-      color: parts[0] || '#6366f1'
+      color: parts[0] || '#6366f1',
+      last_seen: rawProfile.last_seen || null
     };
   }
 
@@ -350,7 +427,6 @@
   function normalizePhone(phoneStr) {
     const digits = String(phoneStr || '').replace(/[^\d+]/g, '');
     if (!digits) return '';
-    // Приводим российские номера 89... к +79... для единого поиска
     const onlyNums = digits.replace(/\D/g, '');
     if (onlyNums.length === 11 && onlyNums.startsWith('8')) {
       return '+7' + onlyNums.slice(1);
@@ -359,6 +435,36 @@
       return '+' + onlyNums;
     }
     return digits.startsWith('+') ? digits : '+' + onlyNums;
+  }
+
+  function formatPresenceStatus(person) {
+    if (!person) return '';
+    if (onlineUserIds.has(person.id)) {
+      return '● в сети';
+    }
+    if (person.last_seen) {
+      const seenDate = new Date(person.last_seen);
+      const diffSec = Math.floor((Date.now() - seenDate.getTime()) / 1000);
+      if (diffSec < 90) return '● в сети';
+      const today = new Date();
+      const isToday = seenDate.toDateString() === today.toDateString();
+      const timeStr = seenDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      if (isToday) {
+        return `был(а) в сети сегодня в ${timeStr}`;
+      }
+      const dateStr = seenDate.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+      return `был(а) в сети ${dateStr} в ${timeStr}`;
+    }
+    return `@${person.username}`;
+  }
+
+  function isPersonOnline(person) {
+    if (!person) return false;
+    if (onlineUserIds.has(person.id)) return true;
+    if (person.last_seen) {
+      return (Date.now() - new Date(person.last_seen).getTime()) < 90000;
+    }
+    return false;
   }
 
   function renderAvatarElement(el, { avatar_url, letter, color }) {
@@ -371,7 +477,7 @@
     }
   }
 
-  // 5. Инициализация Supabase и авторизация
+  // 6. Инициализация Supabase и авторизация
   function initSupabase() {
     const cfg = window.MESSENGER_CONFIG || {};
     const url = (cfg.SUPABASE_URL || '').trim();
@@ -471,7 +577,8 @@
             id: data.user.id,
             email,
             display_name: nameVal,
-            avatar_color: packedMeta
+            avatar_color: packedMeta,
+            last_seen: new Date().toISOString()
           });
         }
 
@@ -522,14 +629,21 @@
           id: user.id,
           email: user.email,
           display_name: metaName,
-          avatar_color: packed
+          avatar_color: packed,
+          last_seen: new Date().toISOString()
         })
         .select()
         .single();
       rawProf = inserted || { id: user.id, email: user.email, display_name: metaName, avatar_color: packed };
+    } else {
+      await supabaseClient
+        .from('profiles')
+        .update({ last_seen: new Date().toISOString() })
+        .eq('id', user.id);
     }
 
     currentUser = unpackProfile(rawProf);
+    onlineUserIds.add(currentUser.id);
     updateMyHeaderUI();
 
     authScreen.classList.add('hidden');
@@ -538,9 +652,17 @@
     await ensureSavedMessagesRoom();
     await refreshDirectoryAndRooms();
     subscribeRealtime();
+
+    // Периодический пульс онлайна (каждые 45 сек)
+    setInterval(async () => {
+      if (!currentUser || !supabaseClient) return;
+      await supabaseClient
+        .from('profiles')
+        .update({ last_seen: new Date().toISOString() })
+        .eq('id', currentUser.id);
+    }, 45000);
   }
 
-  // Личный чат "Избранное (Заметки)" как в Telegram
   async function ensureSavedMessagesRoom() {
     const savedKey = `saved_${currentUser.id}`;
     const { data: existing } = await supabaseClient
@@ -571,7 +693,7 @@
     });
   }
 
-  // 6. Редактирование профиля и загрузка фото-аватарки
+  // 7. Редактирование профиля и загрузка фото-аватарки
   function openProfileModal() {
     pendingAvatarUrl = currentUser.avatar_url || '';
     editNameInput.value = currentUser.display_name;
@@ -650,7 +772,8 @@
       .from('profiles')
       .update({
         display_name: newName,
-        avatar_color: packed
+        avatar_color: packed,
+        last_seen: new Date().toISOString()
       })
       .eq('id', currentUser.id);
 
@@ -670,7 +793,7 @@
     await refreshDirectoryAndRooms();
   });
 
-  // 7. Загрузка контактов и приватных чатов
+  // 8. Загрузка контактов и приватных чатов
   async function refreshDirectoryAndRooms() {
     const [{ data: profRows }, { data: roomRows }] = await Promise.all([
       supabaseClient.from('profiles').select('*').order('display_name', { ascending: true }),
@@ -683,6 +806,14 @@
     myRooms = rawRooms
       .filter((r) => isUserMemberOfRoom(r, currentUser.id))
       .map((r) => decorateRoomForUser(r));
+
+    if (activeRoom) {
+      const updatedActive = myRooms.find((r) => r.id === activeRoom.id);
+      if (updatedActive) {
+        activeRoom = updatedActive;
+        updateActiveRoomHeaderUI();
+      }
+    }
 
     renderSidebarList();
   }
@@ -710,6 +841,7 @@
           avatarLetter: '★',
           avatarColor: '#6366f1',
           avatarUrl: '',
+          isOnline: false,
           peerProfile: currentUser
         };
       }
@@ -717,13 +849,15 @@
       const partnerId = ids.find((id) => id !== currentUser.id) || currentUser.id;
       const partner = allProfiles.find((p) => p.id === partnerId);
       if (partner) {
+        const online = isPersonOnline(partner);
         return {
           ...room,
           displayTitle: partner.display_name,
-          displaySub: partner.phone ? `@${partner.username} • ${partner.phone}` : `@${partner.username}`,
+          displaySub: formatPresenceStatus(partner),
           avatarLetter: (partner.display_name || '?')[0].toUpperCase(),
           avatarColor: partner.color,
           avatarUrl: partner.avatar_url,
+          isOnline: online,
           peerProfile: partner
         };
       }
@@ -741,11 +875,12 @@
       avatarLetter: (room.name || 'Г')[0].toUpperCase(),
       avatarColor: '#4f46e5',
       avatarUrl: '',
+      isOnline: false,
       peerProfile: null
     };
   }
 
-  // 8. Поиск людей по @username, номеру телефона или имени
+  // 9. Поиск людей по @username, номеру телефона или имени
   searchInput.addEventListener('input', () => {
     const q = searchInput.value.trim();
     searchClearBtn.classList.toggle('hidden', !q);
@@ -783,6 +918,8 @@
       matches.forEach((person) => {
         const item = document.createElement('div');
         item.className = 'chat-item';
+        const wrap = document.createElement('div');
+        wrap.className = 'avatar-wrap';
         const av = document.createElement('div');
         av.className = 'avatar';
         renderAvatarElement(av, {
@@ -790,6 +927,12 @@
           letter: person.display_name,
           color: person.color
         });
+        wrap.appendChild(av);
+        if (isPersonOnline(person)) {
+          const dot = document.createElement('span');
+          dot.className = 'online-dot';
+          wrap.appendChild(dot);
+        }
 
         const body = document.createElement('div');
         body.className = 'chat-item-body';
@@ -801,7 +944,7 @@
           <div class="chat-item-sub" style="color:var(--accent);">@${escapeHtml(person.username)}${phoneBadge}</div>
         `;
 
-        item.appendChild(av);
+        item.appendChild(wrap);
         item.appendChild(body);
         item.addEventListener('click', () => {
           searchInput.value = '';
@@ -820,6 +963,8 @@
       const item = document.createElement('div');
       item.className = `chat-item ${isSelected ? 'active' : ''}`;
 
+      const wrap = document.createElement('div');
+      wrap.className = 'avatar-wrap';
       const av = document.createElement('div');
       av.className = 'avatar';
       renderAvatarElement(av, {
@@ -827,6 +972,18 @@
         letter: room.avatarLetter,
         color: room.avatarColor
       });
+      wrap.appendChild(av);
+      if (room.isOnline) {
+        const dot = document.createElement('span');
+        dot.className = 'online-dot';
+        wrap.appendChild(dot);
+      }
+
+      const typingInfo = typingByRoom.get(room.id);
+      const isTypingActive = typingInfo && typingInfo.expiresAt > Date.now();
+      const subText = isTypingActive
+        ? `${typingInfo.name}: ${typingInfo.action}`
+        : room.displaySub;
 
       const body = document.createElement('div');
       body.className = 'chat-item-body';
@@ -834,10 +991,10 @@
         <div class="chat-item-top">
           <div class="chat-item-title">${escapeHtml(room.displayTitle)}</div>
         </div>
-        <div class="chat-item-sub">${escapeHtml(room.displaySub)}</div>
+        <div class="chat-item-sub ${isTypingActive ? 'typing-highlight' : ''}">${escapeHtml(subText)}</div>
       `;
 
-      item.appendChild(av);
+      item.appendChild(wrap);
       item.appendChild(body);
       item.addEventListener('click', () => selectRoom(room));
       chatList.appendChild(item);
@@ -876,7 +1033,7 @@
     await selectRoom(decorateRoomForUser(existing));
   }
 
-  // 9. Создание закрытой группы
+  // 10. Создание закрытой группы
   newGroupBtn.addEventListener('click', () => {
     groupNameInput.value = '';
     groupMembersPicker.innerHTML = '';
@@ -939,7 +1096,7 @@
     await selectRoom(decorateRoomForUser(created));
   });
 
-  // 10. Выбор чата, просмотр профиля собеседника и настройка E2EE
+  // 11. Выбор чата, шапка с онлайном и «печатает...»
   async function selectRoom(room) {
     activeRoom = room;
     replyToMsg = null;
@@ -949,23 +1106,38 @@
     activeChatView.classList.remove('hidden');
     appShell.classList.add('chat-active');
 
-    activeRoomTitle.textContent = room.displayTitle;
-    activeRoomStatus.textContent = room.displaySub;
-    renderAvatarElement(activeRoomAvatar, {
-      avatar_url: room.avatarUrl,
-      letter: room.avatarLetter,
-      color: room.avatarColor
-    });
-
+    updateActiveRoomHeaderUI();
     updateE2eBadgeUI();
     renderSidebarList();
     await loadMessages(room.id);
   }
 
+  function updateActiveRoomHeaderUI() {
+    if (!activeRoom) return;
+    activeRoomTitle.textContent = activeRoom.displayTitle;
+    renderAvatarElement(activeRoomAvatar, {
+      avatar_url: activeRoom.avatarUrl,
+      letter: activeRoom.avatarLetter,
+      color: activeRoom.avatarColor
+    });
+    activeRoomOnlineDot.classList.toggle('hidden', !activeRoom.isOnline);
+
+    const typingInfo = typingByRoom.get(activeRoom.id);
+    if (typingInfo && typingInfo.expiresAt > Date.now()) {
+      activeRoomStatus.textContent = activeRoom.is_group
+        ? `${typingInfo.name}: ${typingInfo.action}`
+        : typingInfo.action;
+      activeRoomStatus.className = 'header-status typing';
+    } else {
+      activeRoomStatus.textContent = activeRoom.displaySub;
+      activeRoomStatus.className = `header-status ${activeRoom.isOnline ? 'online' : ''}`;
+    }
+  }
+
   function updateE2eBadgeUI() {
     if (!activeRoom) return;
     const customSecret = getRoomCustomSecret(activeRoom.id);
-    e2eBadgeText.textContent = customSecret ? 'AES-256 + Личный ключ' : 'AES-256';
+    e2eBadgeText.textContent = customSecret ? 'AES-256 + Ключ' : 'AES-256';
   }
 
   e2eBadgeBtn.addEventListener('click', () => {
@@ -988,7 +1160,6 @@
     if (e.target.closest('#mobileBackBtn')) return;
     if (!activeRoom) return;
 
-    // Если это чат «Избранное (Заметки)»
     if (activeRoom.direct_key === `saved_${currentUser.id}`) {
       renderAvatarElement(peerAvatar, {
         avatar_url: '',
@@ -998,7 +1169,7 @@
       peerName.textContent = 'Избранное (Заметки)';
       peerHandle.textContent = 'Личное хранилище AES-256';
       peerPhone.textContent = '';
-      peerBio.textContent = 'Здесь можно сохранять для себя важные заметки, фотографии и голосовые сообщения. Доступ к этому чату есть только у вас.';
+      peerBio.textContent = 'Здесь можно сохранять для себя важные заметки, фотографии, видеокружочки и файлы. Доступ к этому чату есть только у вас.';
       peerBio.classList.remove('hidden');
       peerModal.classList.remove('hidden');
       return;
@@ -1012,7 +1183,7 @@
       color: p.color
     });
     peerName.textContent = p.display_name;
-    peerHandle.textContent = `@${p.username}`;
+    peerHandle.textContent = `@${p.username} • ${formatPresenceStatus(p)}`;
     peerPhone.textContent = p.phone ? `Телефон: ${p.phone}` : '';
     if (p.bio && p.bio.trim()) {
       peerBio.textContent = p.bio.trim();
@@ -1031,7 +1202,7 @@
     appShell.classList.remove('chat-active');
   });
 
-  // 11. Загрузка, расшифровка и отрисовка сообщений
+  // 12. Отрисовка сообщений (Текст, Фото, Голосовые, Видеокружочки, Любые Файлы)
   async function loadMessages(roomId) {
     const { data, error } = await supabaseClient
       .from('messages')
@@ -1068,7 +1239,6 @@
       const showAuthor = activeRoom.is_group && !isOwn;
       const decryptedText = await decryptTextForRoom(msg.content || '', activeRoom);
 
-      // Разбор цитаты ответа, если сообщение начинается с >>Автор: Текст\n
       let replyBlockHtml = '';
       let mainText = decryptedText;
       if (decryptedText.startsWith('>>')) {
@@ -1080,20 +1250,51 @@
         }
       }
 
+      const rawUrl = msg.media_url || '';
+      const isVideoCircle = rawUrl.includes('#circle');
+      const isFileAttachment = rawUrl.includes('#file:');
+
       let contentBlock = replyBlockHtml;
-      if (msg.media_type === 'image' && msg.media_url) {
-        contentBlock += `<img class="msg-photo" src="${msg.media_url}" alt="Фото" />`;
-      } else if (msg.media_type === 'audio' && msg.media_url) {
+
+      if (isVideoCircle) {
+        const cleanVideoUrl = rawUrl.split('#')[0];
+        contentBlock += `
+          <div class="video-note-wrap" data-video="${escapeHtml(cleanVideoUrl)}">
+            <video src="${escapeHtml(cleanVideoUrl)}" playsinline loop preload="metadata"></video>
+            <div class="video-note-badge">▶ Кружочек</div>
+          </div>
+        `;
+      } else if (isFileAttachment) {
+        const [cleanFileUrl, hashPart] = rawUrl.split('#file:');
+        const metaParts = (hashPart || '').split(':');
+        const fileName = decodeURIComponent(metaParts[0] || 'Документ');
+        const fileSize = decodeURIComponent(metaParts[1] || '');
+        contentBlock += `
+          <a class="file-card" href="${escapeHtml(cleanFileUrl)}" target="_blank" rel="noopener" download="${escapeHtml(fileName)}">
+            <div class="file-icon-box">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+              </svg>
+            </div>
+            <div class="file-meta">
+              <div class="file-name">${escapeHtml(fileName)}</div>
+              <div class="file-sub">${escapeHtml(fileSize || 'Скачать файл')}</div>
+            </div>
+          </a>
+        `;
+      } else if (msg.media_type === 'image' && rawUrl) {
+        contentBlock += `<img class="msg-photo" src="${escapeHtml(rawUrl)}" alt="Фото" />`;
+      } else if (msg.media_type === 'audio' && rawUrl) {
         contentBlock += buildVoicePlayerHtml();
       }
 
-      if (mainText && msg.media_type !== 'audio') {
+      if (mainText && msg.media_type !== 'audio' && !isVideoCircle) {
         contentBlock += `<div>${escapeHtml(mainText)}</div>`;
       }
 
       row.innerHTML = `
         ${showAuthor ? `<div class="msg-author" style="color:var(--accent)">${escapeHtml(msg.sender_name)}</div>` : ''}
-        <div class="msg-bubble">
+        <div class="msg-bubble ${isVideoCircle ? 'circle-bubble' : ''}">
           ${contentBlock}
           <div class="msg-meta">
             <span class="msg-action-link reply-trigger">Ответить</span>
@@ -1107,14 +1308,30 @@
       const img = row.querySelector('.msg-photo');
       if (img) {
         img.addEventListener('click', () => {
-          lightboxImg.src = msg.media_url;
+          lightboxImg.src = rawUrl;
           lightbox.classList.remove('hidden');
+        });
+      }
+
+      const circleEl = row.querySelector('.video-note-wrap');
+      if (circleEl) {
+        const vid = circleEl.querySelector('video');
+        const badge = circleEl.querySelector('.video-note-badge');
+        circleEl.addEventListener('click', () => {
+          if (vid.paused) {
+            vid.muted = false;
+            vid.play();
+            if (badge) badge.textContent = '⏸ Пауза';
+          } else {
+            vid.pause();
+            if (badge) badge.textContent = '▶ Кружочек';
+          }
         });
       }
 
       const voiceWrap = row.querySelector('.voice-player');
       if (voiceWrap) {
-        bindVoicePlayer(voiceWrap, msg.media_url);
+        bindVoicePlayer(voiceWrap, rawUrl);
       }
 
       const replyBtn = row.querySelector('.reply-trigger');
@@ -1122,7 +1339,15 @@
         replyBtn.addEventListener('click', () => {
           replyToMsg = {
             author: msg.sender_name,
-            text: mainText || (msg.media_type === 'image' ? '[Фотография]' : '[Голосовое сообщение]')
+            text:
+              mainText ||
+              (isVideoCircle
+                ? '[Видеокружочек]'
+                : isFileAttachment
+                ? '[Файл]'
+                : msg.media_type === 'image'
+                ? '[Фотография]'
+                : '[Голосовое сообщение]')
           };
           replyTargetAuthor.textContent = `Ответ для ${replyToMsg.author}`;
           replyTargetText.textContent = replyToMsg.text;
@@ -1202,7 +1427,32 @@
     lightboxImg.src = '';
   });
 
-  // 12. Отправка зашифрованного текста, фото и голосовых
+  // 13. Трансляция индикатора «печатает...»
+  function broadcastUserAction(actionText) {
+    if (!realtimeChannel || !activeRoom || !currentUser) return;
+    const now = Date.now();
+    if (now - lastTypingBroadcastAt < 1500 && actionText === 'печатает...') return;
+    lastTypingBroadcastAt = now;
+
+    realtimeChannel.send({
+      type: 'broadcast',
+      event: 'typing',
+      payload: {
+        room_id: activeRoom.id,
+        user_id: currentUser.id,
+        name: currentUser.display_name,
+        action: actionText
+      }
+    });
+  }
+
+  messageInput.addEventListener('input', () => {
+    if (messageInput.value.trim().length > 0) {
+      broadcastUserAction('печатает...');
+    }
+  });
+
+  // 14. Отправка текста, фото, любых файлов, голосовых и видеокружочков
   async function handleSendText() {
     if (!activeRoom) return;
     let text = messageInput.value.trim();
@@ -1228,6 +1478,7 @@
     }
   });
 
+  // Фотографии
   attachPhotoBtn.addEventListener('click', () => {
     if (!activeRoom) return;
     photoInput.click();
@@ -1239,6 +1490,7 @@
     photoInput.value = '';
 
     try {
+      broadcastUserAction('отправляет фото...');
       const blob = await compressImage(file, 1280, 0.84);
       const path = `photos/${currentUser.id}_${Date.now()}.jpg`;
       const { error: upErr } = await supabaseClient.storage
@@ -1253,6 +1505,135 @@
     }
   });
 
+  // Любые файлы и документы (📎)
+  attachDocBtn.addEventListener('click', () => {
+    if (!activeRoom) return;
+    docInput.click();
+  });
+
+  docInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file || !activeRoom) return;
+    docInput.value = '';
+
+    if (file.size > 45 * 1024 * 1024) {
+      alert('Максимальный размер файла в бесплатном тарифе — 45 МБ.');
+      return;
+    }
+
+    try {
+      broadcastUserAction('загружает файл...');
+      const safeExt = (file.name.split('.').pop() || 'bin').replace(/[^a-zA-Z0-9]/g, '');
+      const path = `files/${currentUser.id}_${Date.now()}.${safeExt}`;
+      const { error: upErr } = await supabaseClient.storage
+        .from('chat-media')
+        .upload(path, file, { contentType: file.type || 'application/octet-stream' });
+      if (upErr) throw upErr;
+
+      const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+      const sizeStr = formatFileSize(file.size);
+      const taggedUrl = `${pub.publicUrl}#file:${encodeURIComponent(file.name)}:${encodeURIComponent(sizeStr)}`;
+      await sendMessage({ content: '', media_type: 'image', media_url: taggedUrl });
+    } catch (err) {
+      alert('Ошибка отправки файла: ' + (err.message || err));
+    }
+  });
+
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' Б';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
+  }
+
+  // Видеокружочки (🎥)
+  videoCircleBtn.addEventListener('click', async () => {
+    if (!activeRoom) return;
+    try {
+      videoStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 480 } },
+        audio: true
+      });
+      videoCirclePreview.srcObject = videoStream;
+      videoCircleModal.classList.remove('hidden');
+
+      const mime = getSupportedVideoMime();
+      videoRecorder = mime ? new MediaRecorder(videoStream, { mimeType: mime }) : new MediaRecorder(videoStream);
+      videoChunks = [];
+      videoCanceled = false;
+      videoStartTime = Date.now();
+
+      videoRecorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) videoChunks.push(ev.data);
+      };
+
+      videoRecorder.onstop = async () => {
+        clearInterval(videoTimerInterval);
+        if (videoStream) {
+          videoStream.getTracks().forEach((t) => t.stop());
+          videoStream = null;
+        }
+        videoCircleModal.classList.add('hidden');
+
+        if (videoCanceled || !videoChunks.length) return;
+
+        const finalMime = videoRecorder.mimeType || 'video/mp4';
+        const ext = finalMime.includes('mp4') ? 'mp4' : 'webm';
+        const blob = new Blob(videoChunks, { type: finalMime });
+
+        try {
+          broadcastUserAction('отправляет кружочек...');
+          const path = `circles/${currentUser.id}_${Date.now()}.${ext}`;
+          const { error: upErr } = await supabaseClient.storage
+            .from('chat-media')
+            .upload(path, blob, { contentType: finalMime });
+          if (upErr) throw upErr;
+
+          const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+          await sendMessage({
+            content: '',
+            media_type: 'audio',
+            media_url: `${pub.publicUrl}#circle`
+          });
+        } catch (err) {
+          alert('Ошибка отправки видеокружочка: ' + (err.message || err));
+        }
+      };
+
+      videoRecorder.start();
+      broadcastUserAction('записывает видеокружочек...');
+      videoCircleTimer.textContent = 'Идёт запись: 0:00';
+      videoTimerInterval = setInterval(() => {
+        const sec = Math.floor((Date.now() - videoStartTime) / 1000);
+        const m = Math.floor(sec / 60);
+        const s = String(sec % 60).padStart(2, '0');
+        videoCircleTimer.textContent = `Идёт запись: ${m}:${s}`;
+        broadcastUserAction('записывает видеокружочек...');
+        if (sec >= 60 && videoRecorder.state === 'recording') {
+          videoRecorder.stop();
+        }
+      }, 1000);
+    } catch (err) {
+      alert('Разрешите доступ к камере и микрофону для записи видеокружочков.');
+    }
+  });
+
+  sendVideoCircleBtn.addEventListener('click', () => {
+    if (videoRecorder && videoRecorder.state === 'recording') {
+      videoCanceled = false;
+      videoRecorder.stop();
+    }
+  });
+
+  cancelVideoCircleBtn.addEventListener('click', () => {
+    if (videoRecorder && videoRecorder.state === 'recording') {
+      videoCanceled = true;
+      videoRecorder.stop();
+    } else {
+      videoCircleModal.classList.add('hidden');
+    }
+  });
+
+  // Голосовые сообщения (🎤)
   voiceBtn.addEventListener('click', async () => {
     if (!activeRoom) return;
     if (mediaRecorder && mediaRecorder.state === 'recording') {
@@ -1300,6 +1681,7 @@
       };
 
       mediaRecorder.start();
+      broadcastUserAction('записывает голосовое...');
       voiceBtn.classList.add('recording');
       messageInput.classList.add('hidden');
       recordingBar.classList.remove('hidden');
@@ -1310,7 +1692,8 @@
         const m = Math.floor(sec / 60);
         const s = String(sec % 60).padStart(2, '0');
         recordingTimer.textContent = `${m}:${s}`;
-      }, 500);
+        broadcastUserAction('записывает голосовое...');
+      }, 1000);
     } catch (err) {
       alert('Разрешите доступ к микрофону в браузере для записи голосовых сообщений.');
     }
@@ -1355,17 +1738,56 @@
     }
   }
 
+  // 15. Realtime подписка: Сообщения, Онлайн-присутствие (Presence) и Индикатор «печатает...» (Broadcast)
   function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
-    realtimeChannel = supabaseClient
-      .channel('pulse-realtime-v2')
+
+    realtimeChannel = supabaseClient.channel('pulse-global-v3', {
+      config: {
+        presence: { key: currentUser.id }
+      }
+    });
+
+    realtimeChannel
+      .on('presence', { event: 'sync' }, () => {
+        const state = realtimeChannel.presenceState();
+        onlineUserIds.clear();
+        onlineUserIds.add(currentUser.id);
+        Object.keys(state).forEach((uid) => onlineUserIds.add(uid));
+        myRooms = myRooms.map((r) => decorateRoomForUser(r));
+        if (activeRoom) {
+          const updated = myRooms.find((r) => r.id === activeRoom.id);
+          if (updated) activeRoom = updated;
+        }
+        updateActiveRoomHeaderUI();
+        renderSidebarList();
+      })
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (!payload || payload.user_id === currentUser.id) return;
+        typingByRoom.set(payload.room_id, {
+          name: payload.name || 'Собеседник',
+          action: payload.action || 'печатает...',
+          expiresAt: Date.now() + 3000
+        });
+        updateActiveRoomHeaderUI();
+        renderSidebarList();
+        setTimeout(() => {
+          updateActiveRoomHeaderUI();
+          renderSidebarList();
+        }, 3100);
+      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
         const incoming = payload.new;
+        if (incoming.sender_id !== currentUser.id) {
+          typingByRoom.delete(incoming.room_id);
+          playNotificationSound();
+        }
         if (activeRoom && incoming.room_id === activeRoom.id) {
           if (!roomMessages.some((m) => m.id === incoming.id)) {
             roomMessages.push(incoming);
             await renderMessages();
           }
+          updateActiveRoomHeaderUI();
         } else {
           await refreshDirectoryAndRooms();
         }
@@ -1383,7 +1805,14 @@
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
         refreshDirectoryAndRooms();
       })
-      .subscribe();
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await realtimeChannel.track({
+            user_id: currentUser.id,
+            online_at: new Date().toISOString()
+          });
+        }
+      });
   }
 
   logoutBtn.addEventListener('click', async () => {
@@ -1395,6 +1824,14 @@
 
   function getSupportedAudioMime() {
     const list = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'];
+    for (const m of list) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+    }
+    return '';
+  }
+
+  function getSupportedVideoMime() {
+    const list = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
     for (const m of list) {
       if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
     }
