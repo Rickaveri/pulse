@@ -1,9 +1,8 @@
-// Pulse Messenger — Полная версия с умной кнопкой 3-в-1 как в Telegram, адаптацией под iPhone (Dynamic Island), AES-256 E2EE, кружочками и файлами
+// Pulse Messenger v5 — Умная клавиатура iOS, меню сообщений (Ответить / Изменить / Удалить у меня или у всех), пауза и смена камеры в кружочках, единые Настройки
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
 
-  // SVG иконки для умной кнопки 3-в-1 (Самолётик / Микрофон / Видеокружочек)
   const ICON_SEND = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="transform:translateX(1px);"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
   const ICON_MIC = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
   const ICON_VIDEO = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
@@ -34,11 +33,11 @@
   const authSubmitBtn = document.getElementById('authSubmitBtn');
   const authStatus = document.getElementById('authStatus');
 
-  // DOM: Профиль и темы
+  // DOM: Единый раздел Настройки и подтверждение выхода
   const profileModal = document.getElementById('profileModal');
   const myProfileTrigger = document.getElementById('myProfileTrigger');
   const editProfileBtn = document.getElementById('editProfileBtn');
-  const soundToggleBtn = document.getElementById('soundToggleBtn');
+  const soundToggleSwitch = document.getElementById('soundToggleSwitch');
   const editAvatarPreview = document.getElementById('editAvatarPreview');
   const avatarFileInput = document.getElementById('avatarFileInput');
   const uploadAvatarBtn = document.getElementById('uploadAvatarBtn');
@@ -49,10 +48,33 @@
   const saveProfileBtn = document.getElementById('saveProfileBtn');
   const closeProfileBtn = document.getElementById('closeProfileBtn');
   const themePills = Array.from(document.querySelectorAll('[data-set-theme]'));
+  const requestLogoutBtn = document.getElementById('requestLogoutBtn');
 
-  // DOM: Видеокружочки
+  const logoutConfirmModal = document.getElementById('logoutConfirmModal');
+  const confirmLogoutBtn = document.getElementById('confirmLogoutBtn');
+  const cancelLogoutBtn = document.getElementById('cancelLogoutBtn');
+
+  // DOM: Меню действий над сообщением и подтверждение удаления
+  const msgActionModal = document.getElementById('msgActionModal');
+  const sheetReplyBtn = document.getElementById('sheetReplyBtn');
+  const sheetEditBtn = document.getElementById('sheetEditBtn');
+  const sheetCopyBtn = document.getElementById('sheetCopyBtn');
+  const sheetDeleteBtn = document.getElementById('sheetDeleteBtn');
+  const sheetCancelBtn = document.getElementById('sheetCancelBtn');
+
+  const deleteConfirmModal = document.getElementById('deleteConfirmModal');
+  const deleteForMeBtn = document.getElementById('deleteForMeBtn');
+  const deleteForAllBtn = document.getElementById('deleteForAllBtn');
+  const cancelDeleteModalBtn = document.getElementById('cancelDeleteModalBtn');
+
+  // DOM: Видеокружочки с управлением камерой и паузой
   const videoCircleOverlay = document.getElementById('videoCircleOverlay');
   const videoCirclePreview = document.getElementById('videoCirclePreview');
+  const vcStatusLabel = document.getElementById('vcStatusLabel');
+  const vcCancelBtn = document.getElementById('vcCancelBtn');
+  const vcFlipCamBtn = document.getElementById('vcFlipCamBtn');
+  const vcPauseBtn = document.getElementById('vcPauseBtn');
+  const vcSendBtn = document.getElementById('vcSendBtn');
 
   // DOM: Группы, карточка собеседника и E2EE
   const groupModal = document.getElementById('groupModal');
@@ -82,7 +104,6 @@
   const myAvatar = document.getElementById('myAvatar');
   const myName = document.getElementById('myName');
   const myHandle = document.getElementById('myHandle');
-  const logoutBtn = document.getElementById('logoutBtn');
 
   const searchInput = document.getElementById('searchInput');
   const searchClearBtn = document.getElementById('searchClearBtn');
@@ -107,8 +128,9 @@
   const attachBtn = document.getElementById('attachBtn');
   const messageInput = document.getElementById('messageInput');
   const recordingBar = document.getElementById('recordingBar');
+  const recDot = document.getElementById('recDot');
   const recordingTimer = document.getElementById('recordingTimer');
-  const recordingHintText = document.getElementById('recordingHintText');
+  const pauseVoiceBtn = document.getElementById('pauseVoiceBtn');
   const cancelRecordBtn = document.getElementById('cancelRecordBtn');
   const lockHintPill = document.getElementById('lockHintPill');
   const smartActionBtn = document.getElementById('smartActionBtn');
@@ -127,26 +149,83 @@
   let myRooms = [];
   let activeRoom = null;
   let roomMessages = [];
+
+  // Состояние ответа / редактирования / выбранного сообщения
   let replyToMsg = null;
+  let editingMsg = null; // { id, created_at, quoteLine, plainText }
+  let selectedMsgContext = null; // { msg, plainText, quoteLine, isEdited }
 
   const onlineUserIds = new Set();
   const typingByRoom = new Map();
   let lastTypingBroadcastAt = 0;
   let soundEnabled = localStorage.getItem('pulse_sound') !== 'off';
 
-  // Состояние умной кнопки 3-в-1 (как в Telegram)
-  let recordMode = localStorage.getItem('pulse_rec_mode') === 'video' ? 'video' : 'voice'; // 'voice' | 'video'
+  // Список локально скрытых сообщений ("Удалить только у меня")
+  function getLocallyHiddenMsgIds() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('pulse_hidden_msgs') || '[]'));
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  function hideMsgLocally(msgId) {
+    const set = getLocallyHiddenMsgIds();
+    set.add(msgId);
+    localStorage.setItem('pulse_hidden_msgs', JSON.stringify(Array.from(set)));
+  }
+
+  // Состояние записи (Голос / Видеокружочек)
+  let recordMode = localStorage.getItem('pulse_rec_mode') === 'video' ? 'video' : 'voice';
+  let cameraFacingMode = 'user'; // 'user' (фронтальная) | 'environment' (основная)
   let isRecording = false;
   let isRecordingLocked = false;
+  let isRecordingPaused = false;
   let recordCanceled = false;
   let activeMediaRecorder = null;
   let activeMediaStream = null;
   let recordedChunks = [];
-  let recordStartTime = 0;
+  let elapsedRecordMs = 0;
+  let lastResumeTime = 0;
   let recordTimerInterval = null;
   let holdTimer = null;
   let pointerStartY = 0;
-  let activePointerId = null;
+
+  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ОТСТУПА НА IPHONE (VisualViewport Sync)
+  function syncViewportHeight() {
+    const vv = window.visualViewport;
+    const h = vv ? vv.height : window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', `${Math.round(h)}px`);
+
+    const isKeyboardOpen = vv ? (window.innerHeight - vv.height > 110) : false;
+    document.body.classList.toggle('keyboard-open', isKeyboardOpen);
+
+    // Сбрасываем фантомный скролл WebKit на iOS
+    if (window.scrollY !== 0 || window.scrollX !== 0) {
+      window.scrollTo(0, 0);
+    }
+    if (isKeyboardOpen && messagesViewport) {
+      messagesViewport.scrollTop = messagesViewport.scrollHeight;
+    }
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncViewportHeight);
+    window.visualViewport.addEventListener('scroll', syncViewportHeight);
+  }
+  window.addEventListener('resize', syncViewportHeight);
+  messageInput.addEventListener('focus', () => {
+    setTimeout(syncViewportHeight, 60);
+    setTimeout(syncViewportHeight, 250);
+  });
+  messageInput.addEventListener('blur', () => {
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+      syncViewportHeight();
+    }, 60);
+    setTimeout(syncViewportHeight, 250);
+  });
+  syncViewportHeight();
 
   // 1. Управление темой: Авто (system), Тёмная (midnight) и Светлая (daylight)
   const systemLightQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
@@ -180,19 +259,18 @@
   });
   applyTheme(localStorage.getItem('pulse_theme') || 'system');
 
-  // 2. Звуковой сигнал при новом сообщении
-  function updateSoundButtonUI() {
-    if (!soundToggleBtn) return;
-    soundToggleBtn.style.opacity = soundEnabled ? '1' : '0.45';
-    soundToggleBtn.title = soundEnabled ? 'Звук уведомлений включён' : 'Звук уведомлений выключен';
+  // 2. Звуковой сигнал при новом сообщении (внутри Настроек)
+  function updateSoundSwitchUI() {
+    if (!soundToggleSwitch) return;
+    soundToggleSwitch.classList.toggle('on', soundEnabled);
   }
-  updateSoundButtonUI();
+  updateSoundSwitchUI();
 
-  if (soundToggleBtn) {
-    soundToggleBtn.addEventListener('click', () => {
+  if (soundToggleSwitch) {
+    soundToggleSwitch.addEventListener('click', () => {
       soundEnabled = !soundEnabled;
       localStorage.setItem('pulse_sound', soundEnabled ? 'on' : 'off');
-      updateSoundButtonUI();
+      updateSoundSwitchUI();
       if (soundEnabled) playNotificationSound();
     });
   }
@@ -648,6 +726,7 @@
 
     authScreen.classList.add('hidden');
     appShell.classList.remove('hidden');
+    syncViewportHeight();
 
     await ensureSavedMessagesRoom();
     await refreshDirectoryAndRooms();
@@ -692,7 +771,7 @@
     });
   }
 
-  // 7. Редактирование профиля и загрузка фото-аватарки
+  // 7. Единый раздел «Настройки» и подтверждение выхода из аккаунта
   function openProfileModal() {
     pendingAvatarUrl = currentUser.avatar_url || '';
     editNameInput.value = currentUser.display_name;
@@ -704,6 +783,7 @@
       letter: currentUser.display_name,
       color: currentUser.color
     });
+    updateSoundSwitchUI();
     profileModal.classList.remove('hidden');
   }
 
@@ -736,7 +816,7 @@
     } catch (err) {
       alert('Ошибка загрузки аватарки: ' + (err.message || err));
     } finally {
-      uploadAvatarBtn.textContent = 'Загрузить фото аватарки';
+      uploadAvatarBtn.textContent = 'Изменить фото аватарки';
     }
   });
 
@@ -790,6 +870,24 @@
     updateMyHeaderUI();
     profileModal.classList.add('hidden');
     await refreshDirectoryAndRooms();
+  });
+
+  // Подтверждение выхода из аккаунта
+  requestLogoutBtn.addEventListener('click', () => {
+    logoutConfirmModal.classList.remove('hidden');
+  });
+
+  cancelLogoutBtn.addEventListener('click', () => {
+    logoutConfirmModal.classList.add('hidden');
+  });
+
+  confirmLogoutBtn.addEventListener('click', async () => {
+    logoutConfirmModal.classList.add('hidden');
+    profileModal.classList.add('hidden');
+    await supabaseClient.auth.signOut();
+    activeRoom = null;
+    appShell.classList.add('hidden');
+    authScreen.classList.remove('hidden');
   });
 
   // 8. Загрузка контактов и приватных чатов
@@ -1095,11 +1193,10 @@
     await selectRoom(decorateRoomForUser(created));
   });
 
-  // 11. Выбор чата, шапка с онлайном и «печатает...»
+  // 11. Выбор чата
   async function selectRoom(room) {
     activeRoom = room;
-    replyToMsg = null;
-    replyPreviewBar.classList.add('hidden');
+    clearReplyOrEditBar();
 
     emptyChatState.classList.add('hidden');
     activeChatView.classList.remove('hidden');
@@ -1109,6 +1206,7 @@
     updateE2eBadgeUI();
     updateSmartActionButtonUI();
     renderSidebarList();
+    syncViewportHeight();
     await loadMessages(room.id);
   }
 
@@ -1200,9 +1298,10 @@
   mobileBackBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     appShell.classList.remove('chat-active');
+    syncViewportHeight();
   });
 
-  // 12. Отрисовка сообщений (с превью первого кадра кружочка на iOS #t=0.001)
+  // 12. Отрисовка сообщений и аккуратное меню при нажатии на сообщение
   async function loadMessages(roomId) {
     const { data, error } = await supabaseClient
       .from('messages')
@@ -1221,12 +1320,15 @@
     if (!activeRoom) return;
     messagesViewport.innerHTML = '';
 
-    if (!roomMessages.length) {
+    const hiddenIds = getLocallyHiddenMsgIds();
+    const visibleMessages = roomMessages.filter((m) => !hiddenIds.has(m.id));
+
+    if (!visibleMessages.length) {
       messagesViewport.innerHTML = `<div class="date-divider">🔒 Сообщения в этом чате защищены сквозным шифрованием AES-256</div>`;
       return;
     }
 
-    for (const msg of roomMessages) {
+    for (const msg of visibleMessages) {
       const isOwn = msg.sender_id === currentUser.id;
       const row = document.createElement('div');
       row.className = `msg-row ${isOwn ? 'own' : 'other'}`;
@@ -1237,14 +1339,22 @@
       });
 
       const showAuthor = activeRoom.is_group && !isOwn;
-      const decryptedText = await decryptTextForRoom(msg.content || '', activeRoom);
+      let decryptedText = await decryptTextForRoom(msg.content || '', activeRoom);
+
+      // Проверка пометки редактирования [edit]
+      let isEdited = false;
+      if (decryptedText.startsWith('[edit]')) {
+        isEdited = true;
+        decryptedText = decryptedText.slice(6);
+      }
 
       let replyBlockHtml = '';
+      let quoteLine = '';
       let mainText = decryptedText;
       if (decryptedText.startsWith('>>')) {
         const newlineIdx = decryptedText.indexOf('\n');
         if (newlineIdx !== -1) {
-          const quoteLine = decryptedText.slice(2, newlineIdx);
+          quoteLine = decryptedText.slice(2, newlineIdx);
           mainText = decryptedText.slice(newlineIdx + 1);
           replyBlockHtml = `<div class="msg-reply-quote">${escapeHtml(quoteLine)}</div>`;
         }
@@ -1252,6 +1362,7 @@
 
       const rawUrl = msg.media_url || '';
       const isVideoCircle = rawUrl.includes('#circle');
+      const isRearCircle = rawUrl.includes('#circle-rear');
       const isFileAttachment = rawUrl.includes('#file:');
 
       let contentBlock = replyBlockHtml;
@@ -1260,7 +1371,7 @@
         const cleanVideoUrl = rawUrl.split('#')[0];
         contentBlock += `
           <div class="video-note-wrap">
-            <video src="${escapeHtml(cleanVideoUrl)}#t=0.001" playsinline loop preload="metadata"></video>
+            <video class="${isRearCircle ? '' : 'mirrored'}" src="${escapeHtml(cleanVideoUrl)}#t=0.001" playsinline loop preload="metadata"></video>
             <div class="video-note-badge">▶ Кружочек</div>
           </div>
         `;
@@ -1297,17 +1408,19 @@
         <div class="msg-bubble ${isVideoCircle ? 'circle-bubble' : ''}">
           ${contentBlock}
           <div class="msg-meta">
-            <span class="msg-action-link reply-trigger">Ответить</span>
-            ${isOwn ? `<span class="msg-action-link delete-trigger">Удалить</span>` : ''}
+            ${isEdited ? '<span>изм.</span>' : ''}
             <span>${timeStr}</span>
             ${isOwn ? '<span>✓✓</span>' : ''}
           </div>
         </div>
       `;
 
+      const bubbleEl = row.querySelector('.msg-bubble');
+
       const img = row.querySelector('.msg-photo');
       if (img) {
-        img.addEventListener('click', () => {
+        img.addEventListener('click', (ev) => {
+          ev.stopPropagation();
           lightboxImg.src = rawUrl;
           lightbox.classList.remove('hidden');
         });
@@ -1317,7 +1430,8 @@
       if (circleEl) {
         const vid = circleEl.querySelector('video');
         const badge = circleEl.querySelector('.video-note-badge');
-        circleEl.addEventListener('click', () => {
+        circleEl.addEventListener('click', (ev) => {
+          ev.stopPropagation();
           if (vid.paused) {
             vid.muted = false;
             vid.play();
@@ -1334,36 +1448,18 @@
         bindVoicePlayer(voiceWrap, rawUrl);
       }
 
-      const replyBtn = row.querySelector('.reply-trigger');
-      if (replyBtn) {
-        replyBtn.addEventListener('click', () => {
-          replyToMsg = {
-            author: msg.sender_name,
-            text:
-              mainText ||
-              (isVideoCircle
-                ? '[Видеокружочек]'
-                : isFileAttachment
-                ? '[Файл]'
-                : msg.media_type === 'image'
-                ? '[Фотография]'
-                : '[Голосовое сообщение]')
-          };
-          replyTargetAuthor.textContent = `Ответ для ${replyToMsg.author}`;
-          replyTargetText.textContent = replyToMsg.text;
-          replyPreviewBar.classList.remove('hidden');
-          messageInput.focus();
+      // Нажатие на пузырёк сообщения открывает чистое меню действий (как в Telegram)
+      bubbleEl.addEventListener('click', (ev) => {
+        if (ev.target.closest('.voice-play-btn') || ev.target.closest('.file-card')) return;
+        openMessageActionSheet({
+          msg,
+          plainText: mainText,
+          quoteLine,
+          isEdited,
+          isVideoCircle,
+          isFileAttachment
         });
-      }
-
-      const delBtn = row.querySelector('.delete-trigger');
-      if (delBtn) {
-        delBtn.addEventListener('click', async () => {
-          await supabaseClient.from('messages').delete().eq('id', msg.id);
-          roomMessages = roomMessages.filter((m) => m.id !== msg.id);
-          await renderMessages();
-        });
-      }
+      });
 
       messagesViewport.appendChild(row);
     }
@@ -1371,9 +1467,118 @@
     messagesViewport.scrollTop = messagesViewport.scrollHeight;
   }
 
-  cancelReplyBtn.addEventListener('click', () => {
+  // Меню действий над сообщением (Ответить / Изменить / Скопировать / Удалить)
+  function openMessageActionSheet(ctx) {
+    selectedMsgContext = ctx;
+    const isOwn = ctx.msg.sender_id === currentUser.id;
+    const isPlainTextMsg = ctx.msg.media_type === 'text' && !ctx.msg.media_url;
+
+    sheetEditBtn.classList.toggle('hidden', !(isOwn && isPlainTextMsg));
+    sheetCopyBtn.classList.toggle('hidden', !ctx.plainText);
+    msgActionModal.classList.remove('hidden');
+  }
+
+  sheetCancelBtn.addEventListener('click', () => {
+    msgActionModal.classList.add('hidden');
+  });
+
+  msgActionModal.addEventListener('click', (e) => {
+    if (e.target === msgActionModal) msgActionModal.classList.add('hidden');
+  });
+
+  sheetReplyBtn.addEventListener('click', () => {
+    if (!selectedMsgContext) return;
+    const { msg, plainText, isVideoCircle, isFileAttachment } = selectedMsgContext;
+    msgActionModal.classList.add('hidden');
+    editingMsg = null;
+    replyToMsg = {
+      author: msg.sender_name,
+      text:
+        plainText ||
+        (isVideoCircle
+          ? '[Видеокружочек]'
+          : isFileAttachment
+          ? '[Файл]'
+          : msg.media_type === 'image'
+          ? '[Фотография]'
+          : '[Голосовое сообщение]')
+    };
+    replyTargetAuthor.textContent = `Ответ для ${replyToMsg.author}`;
+    replyTargetText.textContent = replyToMsg.text;
+    replyPreviewBar.classList.remove('hidden');
+    messageInput.focus();
+  });
+
+  sheetEditBtn.addEventListener('click', () => {
+    if (!selectedMsgContext) return;
+    const { msg, plainText, quoteLine } = selectedMsgContext;
+    msgActionModal.classList.add('hidden');
     replyToMsg = null;
+    editingMsg = {
+      id: msg.id,
+      created_at: msg.created_at,
+      quoteLine: quoteLine || '',
+      plainText: plainText || ''
+    };
+    replyTargetAuthor.textContent = '✏️ Редактирование сообщения';
+    replyTargetText.textContent = editingMsg.plainText;
+    replyPreviewBar.classList.remove('hidden');
+    messageInput.value = editingMsg.plainText;
+    updateSmartActionButtonUI();
+    messageInput.focus();
+  });
+
+  sheetCopyBtn.addEventListener('click', async () => {
+    if (!selectedMsgContext || !selectedMsgContext.plainText) return;
+    msgActionModal.classList.add('hidden');
+    try {
+      await navigator.clipboard.writeText(selectedMsgContext.plainText);
+    } catch (e) {}
+  });
+
+  sheetDeleteBtn.addEventListener('click', () => {
+    if (!selectedMsgContext) return;
+    msgActionModal.classList.add('hidden');
+    const isOwn = selectedMsgContext.msg.sender_id === currentUser.id;
+    deleteForAllBtn.classList.toggle('hidden', !isOwn);
+    deleteConfirmModal.classList.remove('hidden');
+  });
+
+  cancelDeleteModalBtn.addEventListener('click', () => {
+    deleteConfirmModal.classList.add('hidden');
+  });
+
+  // Удаление только у себя (локально скрывает сообщение)
+  deleteForMeBtn.addEventListener('click', async () => {
+    if (!selectedMsgContext) return;
+    const msgId = selectedMsgContext.msg.id;
+    deleteConfirmModal.classList.add('hidden');
+    hideMsgLocally(msgId);
+    await renderMessages();
+  });
+
+  // Удаление у всех (с сервера Supabase)
+  deleteForAllBtn.addEventListener('click', async () => {
+    if (!selectedMsgContext) return;
+    const msgId = selectedMsgContext.msg.id;
+    deleteConfirmModal.classList.add('hidden');
+    await supabaseClient.from('messages').delete().eq('id', msgId);
+    roomMessages = roomMessages.filter((m) => m.id !== msgId);
+    await renderMessages();
+  });
+
+  function clearReplyOrEditBar() {
+    replyToMsg = null;
+    editingMsg = null;
     replyPreviewBar.classList.add('hidden');
+  }
+
+  cancelReplyBtn.addEventListener('click', () => {
+    if (editingMsg) {
+      messageInput.value = '';
+      updateSmartActionButtonUI();
+    }
+    clearReplyOrEditBar();
   });
 
   function buildVoicePlayerHtml() {
@@ -1399,7 +1604,8 @@
     const playIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>`;
     const pauseIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
 
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
       if (audio.paused) {
         audio.play();
         btn.innerHTML = pauseIcon;
@@ -1446,7 +1652,7 @@
     });
   }
 
-  // 14. УМНАЯ КНОПКА 3-В-1 КАК В TELEGRAM + ЕДИНАЯ СКРЕПКА
+  // 14. УМНАЯ КНОПКА 3-В-1 + ЗАПИСЬ КРУЖОЧКОВ С ПАУЗОЙ И ПЕРЕВОРОТОМ КАМЕРЫ
   function hasTypedText() {
     return messageInput.value.trim().length > 0;
   }
@@ -1458,10 +1664,10 @@
       smartActionBtn.title = 'Отправить';
     } else if (recordMode === 'video') {
       smartActionBtn.innerHTML = ICON_VIDEO;
-      smartActionBtn.title = 'Короткое нажатие — переключить на микрофон. Удержание — запись кружочка';
+      smartActionBtn.title = 'Тап — сменить на микрофон. Удержание — запись видеокружочка';
     } else {
       smartActionBtn.innerHTML = ICON_MIC;
-      smartActionBtn.title = 'Короткое нажатие — переключить на видеокружочек. Удержание — запись голоса';
+      smartActionBtn.title = 'Тап — сменить на видеокружочек. Удержание — запись голоса';
     }
   }
 
@@ -1481,7 +1687,6 @@
     }
   });
 
-  // Единая скрепка слева: сама определяет, выбрано фото (сжимает и шлёт как картинку) или документ/файл
   attachBtn.addEventListener('click', () => {
     if (!activeRoom || isRecording) return;
     attachmentInput.click();
@@ -1534,30 +1739,25 @@
     return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
   }
 
-  // Жесты умной кнопки (Тап / Удержание / Свайп вверх для замка / Отправка самолётиком)
   smartActionBtn.addEventListener('pointerdown', (e) => {
     if (!activeRoom) return;
     e.preventDefault();
 
-    // Если уже идёт закреплённая запись — нажатие на самолётик сразу отправляет запись!
     if (isRecording) {
       finishAndSendRecording();
       return;
     }
 
-    // Если в поле есть текст — нажатие на самолётик отправляет текст!
     if (hasTypedText()) {
       handleSendText();
       return;
     }
 
-    activePointerId = e.pointerId;
     pointerStartY = e.clientY;
     try {
       smartActionBtn.setPointerCapture(e.pointerId);
     } catch (err) {}
 
-    // Если удерживает дольше 220 мс — запускаем запись голоса или видеокружочка
     holdTimer = setTimeout(() => {
       holdTimer = null;
       startSmartRecording(recordMode);
@@ -1567,15 +1767,13 @@
   smartActionBtn.addEventListener('pointermove', (e) => {
     if (!isRecording || isRecordingLocked) return;
     const deltaY = e.clientY - pointerStartY;
-    // Если потянул палец вверх на 42 пикселя — закрепляем запись (режим без рук 🔒)
-    if (deltaY < -42) {
+    if (deltaY < -40) {
       lockActiveRecording();
     }
   });
 
-  function handlePointerRelease(e) {
+  function handlePointerRelease() {
     if (holdTimer) {
-      // Это было короткое нажатие (< 220 мс) — переключаем режим Микрофон ↔ Видеокружочек!
       clearTimeout(holdTimer);
       holdTimer = null;
       recordMode = recordMode === 'voice' ? 'video' : 'voice';
@@ -1584,8 +1782,9 @@
       return;
     }
 
-    // Если запись шла при удержании пальца и не была закреплена замком — отпускание пальца сразу отправляет!
-    if (isRecording && !isRecordingLocked) {
+    // Для видеокружочка сразу оставляем интерактивное окно с кнопками Камера / Пауза / Отмена / Отправить,
+    // а для голосового: если не закреплено замком, отпускание пальца отправляет голосовое
+    if (isRecording && !isRecordingLocked && recordMode === 'voice') {
       finishAndSendRecording();
     }
   }
@@ -1593,21 +1792,29 @@
   smartActionBtn.addEventListener('pointerup', handlePointerRelease);
   smartActionBtn.addEventListener('pointercancel', handlePointerRelease);
 
+  async function openCameraStream(facing) {
+    return await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 480 }, height: { ideal: 480 } },
+      audio: true
+    });
+  }
+
   async function startSmartRecording(mode) {
     if (isRecording || !activeRoom) return;
     isRecording = true;
-    isRecordingLocked = false;
+    isRecordingLocked = mode === 'video'; // Видеокружочек сразу управляемый кнопками (Камера, Пауза, Отмена, Отправить)
+    isRecordingPaused = false;
     recordCanceled = false;
     recordedChunks = [];
+    elapsedRecordMs = 0;
 
     try {
       if (mode === 'video') {
-        activeMediaStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 480 } },
-          audio: true
-        });
+        activeMediaStream = await openCameraStream(cameraFacingMode);
         videoCirclePreview.srcObject = activeMediaStream;
+        videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
         videoCircleOverlay.classList.remove('hidden');
+        vcPauseBtn.textContent = '⏸ Пауза';
         const mime = getSupportedVideoMime();
         activeMediaRecorder = mime
           ? new MediaRecorder(activeMediaStream, { mimeType: mime })
@@ -1620,107 +1827,125 @@
           : new MediaRecorder(activeMediaStream);
       }
 
-      activeMediaRecorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
-      };
+      bindMediaRecorderEvents(mode);
+      activeMediaRecorder.start(250);
+      lastResumeTime = Date.now();
 
-      activeMediaRecorder.onstop = async () => {
-        clearInterval(recordTimerInterval);
-        if (activeMediaStream) {
-          activeMediaStream.getTracks().forEach((t) => t.stop());
-          activeMediaStream = null;
-        }
-        videoCircleOverlay.classList.add('hidden');
-        recordingBar.classList.add('hidden');
-        lockHintPill.classList.add('hidden');
-        messageInput.classList.remove('hidden');
-        smartActionBtn.classList.remove('recording-hold');
+      if (mode === 'voice') {
+        messageInput.classList.add('hidden');
+        recordingBar.classList.remove('hidden');
+        lockHintPill.classList.remove('hidden');
+        smartActionBtn.classList.add('recording-hold');
+        recDot.classList.remove('paused');
+        pauseVoiceBtn.textContent = '⏸ Пауза';
+        recordingTimer.textContent = '0:00';
+      } else {
+        vcStatusLabel.innerHTML = `🔴 Запись: <span id="vcTimerText">0:00</span>`;
+      }
 
-        const wasCanceled = recordCanceled;
-        const chunksCopy = recordedChunks.slice();
-        const usedMime = activeMediaRecorder?.mimeType || (mode === 'video' ? 'video/mp4' : 'audio/mp4');
-
-        isRecording = false;
-        isRecordingLocked = false;
-        activeMediaRecorder = null;
-        updateSmartActionButtonUI();
-
-        if (wasCanceled || !chunksCopy.length) return;
-
-        const blob = new Blob(chunksCopy, { type: usedMime });
-        if (blob.size < 400) return; // Слишком короткое касание
-
-        try {
-          if (mode === 'video') {
-            broadcastUserAction('отправляет кружочек...');
-            const ext = usedMime.includes('mp4') ? 'mp4' : 'webm';
-            const path = `circles/${currentUser.id}_${Date.now()}.${ext}`;
-            const { error: upErr } = await supabaseClient.storage
-              .from('chat-media')
-              .upload(path, blob, { contentType: usedMime });
-            if (upErr) throw upErr;
-
-            const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-            await sendMessage({
-              content: '',
-              media_type: 'audio',
-              media_url: `${pub.publicUrl}#circle`
-            });
-          } else {
-            broadcastUserAction('отправляет голосовое...');
-            const ext = usedMime.includes('mp4') ? 'm4a' : 'webm';
-            const path = `voice/${currentUser.id}_${Date.now()}.${ext}`;
-            const { error: upErr } = await supabaseClient.storage
-              .from('chat-media')
-              .upload(path, blob, { contentType: usedMime });
-            if (upErr) throw upErr;
-
-            const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-            await sendMessage({
-              content: '',
-              media_type: 'audio',
-              media_url: pub.publicUrl
-            });
-          }
-        } catch (err) {
-          alert('Ошибка отправки записи: ' + (err.message || err));
-        }
-      };
-
-      activeMediaRecorder.start();
-      recordStartTime = Date.now();
-
-      messageInput.classList.add('hidden');
-      recordingBar.classList.remove('hidden');
-      lockHintPill.classList.remove('hidden');
-      smartActionBtn.classList.add('recording-hold');
-      recordingTimer.textContent = '0:00';
-      recordingHintText.textContent = 'Вверх — закрепить 🔒';
       updateSmartActionButtonUI();
-
       broadcastUserAction(mode === 'video' ? 'записывает кружочек...' : 'записывает голосовое...');
 
       recordTimerInterval = setInterval(() => {
-        const sec = Math.floor((Date.now() - recordStartTime) / 1000);
+        if (isRecordingPaused) return;
+        const totalMs = elapsedRecordMs + (Date.now() - lastResumeTime);
+        const sec = Math.floor(totalMs / 1000);
         const m = Math.floor(sec / 60);
         const s = String(sec % 60).padStart(2, '0');
-        recordingTimer.textContent = `${m}:${s}`;
+        const formatted = `${m}:${s}`;
+        if (mode === 'voice') {
+          recordingTimer.textContent = formatted;
+        } else {
+          vcStatusLabel.innerHTML = `🔴 Запись: <span>${formatted}</span>`;
+        }
         broadcastUserAction(mode === 'video' ? 'записывает кружочек...' : 'записывает голосовое...');
-        if (sec >= 60 && activeMediaRecorder && activeMediaRecorder.state === 'recording') {
+        if (sec >= 60 && activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
           finishAndSendRecording();
         }
-      }, 500);
+      }, 400);
     } catch (err) {
-      isRecording = false;
-      isRecordingLocked = false;
-      videoCircleOverlay.classList.add('hidden');
-      recordingBar.classList.add('hidden');
-      lockHintPill.classList.add('hidden');
-      messageInput.classList.remove('hidden');
-      smartActionBtn.classList.remove('recording-hold');
-      updateSmartActionButtonUI();
+      cleanupRecordingUI();
       alert('Разрешите доступ к микрофону и камере в настройках браузера.');
     }
+  }
+
+  function bindMediaRecorderEvents(mode) {
+    activeMediaRecorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
+    };
+
+    activeMediaRecorder.onstop = async () => {
+      // Если идёт смена камеры на лету, не завершаем запись
+      if (activeMediaRecorder && activeMediaRecorder._switchingCamera) return;
+
+      clearInterval(recordTimerInterval);
+      if (activeMediaStream) {
+        activeMediaStream.getTracks().forEach((t) => t.stop());
+        activeMediaStream = null;
+      }
+
+      const wasCanceled = recordCanceled;
+      const chunksCopy = recordedChunks.slice();
+      const usedMime = activeMediaRecorder?.mimeType || (mode === 'video' ? 'video/mp4' : 'audio/mp4');
+      const usedFacing = cameraFacingMode;
+
+      cleanupRecordingUI();
+
+      if (wasCanceled || !chunksCopy.length) return;
+
+      const blob = new Blob(chunksCopy, { type: usedMime });
+      if (blob.size < 400) return;
+
+      try {
+        if (mode === 'video') {
+          broadcastUserAction('отправляет кружочек...');
+          const ext = usedMime.includes('mp4') ? 'mp4' : 'webm';
+          const path = `circles/${currentUser.id}_${Date.now()}.${ext}`;
+          const { error: upErr } = await supabaseClient.storage
+            .from('chat-media')
+            .upload(path, blob, { contentType: usedMime });
+          if (upErr) throw upErr;
+
+          const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+          const tag = usedFacing === 'environment' ? '#circle-rear' : '#circle';
+          await sendMessage({
+            content: '',
+            media_type: 'audio',
+            media_url: `${pub.publicUrl}${tag}`
+          });
+        } else {
+          broadcastUserAction('отправляет голосовое...');
+          const ext = usedMime.includes('mp4') ? 'm4a' : 'webm';
+          const path = `voice/${currentUser.id}_${Date.now()}.${ext}`;
+          const { error: upErr } = await supabaseClient.storage
+            .from('chat-media')
+            .upload(path, blob, { contentType: usedMime });
+          if (upErr) throw upErr;
+
+          const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+          await sendMessage({
+            content: '',
+            media_type: 'audio',
+            media_url: pub.publicUrl
+          });
+        }
+      } catch (err) {
+        alert('Ошибка отправки записи: ' + (err.message || err));
+      }
+    };
+  }
+
+  function cleanupRecordingUI() {
+    videoCircleOverlay.classList.add('hidden');
+    recordingBar.classList.add('hidden');
+    lockHintPill.classList.add('hidden');
+    messageInput.classList.remove('hidden');
+    smartActionBtn.classList.remove('recording-hold');
+    isRecording = false;
+    isRecordingLocked = false;
+    isRecordingPaused = false;
+    activeMediaRecorder = null;
+    updateSmartActionButtonUI();
   }
 
   function lockActiveRecording() {
@@ -1728,14 +1953,99 @@
     isRecordingLocked = true;
     lockHintPill.classList.add('hidden');
     smartActionBtn.classList.remove('recording-hold');
-    recordingHintText.textContent = 'Нажмите ➤ для отправки';
     updateSmartActionButtonUI();
   }
+
+  // Пауза / Продолжить для голосового сообщения
+  pauseVoiceBtn.addEventListener('click', () => {
+    if (!isRecording || !activeMediaRecorder) return;
+    lockActiveRecording();
+    togglePauseRecording('voice');
+  });
+
+  // Пауза / Продолжить для видеокружочка
+  vcPauseBtn.addEventListener('click', () => {
+    if (!isRecording || !activeMediaRecorder) return;
+    togglePauseRecording('video');
+  });
+
+  function togglePauseRecording(mode) {
+    try {
+      if (!isRecordingPaused && activeMediaRecorder.state === 'recording') {
+        activeMediaRecorder.pause();
+        elapsedRecordMs += Date.now() - lastResumeTime;
+        isRecordingPaused = true;
+        if (mode === 'voice') {
+          recDot.classList.add('paused');
+          pauseVoiceBtn.textContent = '▶ Далее';
+        } else {
+          vcPauseBtn.textContent = '▶ Далее';
+          vcStatusLabel.innerHTML = `⏸ На паузе`;
+        }
+      } else if (isRecordingPaused && activeMediaRecorder.state === 'paused') {
+        activeMediaRecorder.resume();
+        lastResumeTime = Date.now();
+        isRecordingPaused = false;
+        if (mode === 'voice') {
+          recDot.classList.remove('paused');
+          pauseVoiceBtn.textContent = '⏸ Пауза';
+        } else {
+          vcPauseBtn.textContent = '⏸ Пауза';
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Переворот камеры (Фронтальная ↔ Основная) в видеокружочке
+  vcFlipCamBtn.addEventListener('click', async () => {
+    if (!isRecording) return;
+    cameraFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+    try {
+      if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
+        activeMediaRecorder._switchingCamera = true;
+        activeMediaRecorder.stop();
+      }
+      if (activeMediaStream) {
+        activeMediaStream.getTracks().forEach((t) => t.stop());
+      }
+      recordedChunks = []; // Начинаем запись с выбранного ракурса камеры
+      elapsedRecordMs = 0;
+      lastResumeTime = Date.now();
+      isRecordingPaused = false;
+      vcPauseBtn.textContent = '⏸ Пауза';
+
+      activeMediaStream = await openCameraStream(cameraFacingMode);
+      videoCirclePreview.srcObject = activeMediaStream;
+      videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
+
+      const mime = getSupportedVideoMime();
+      activeMediaRecorder = mime
+        ? new MediaRecorder(activeMediaStream, { mimeType: mime })
+        : new MediaRecorder(activeMediaStream);
+      bindMediaRecorderEvents('video');
+      activeMediaRecorder.start(250);
+    } catch (err) {
+      alert('Не удалось переключить камеру: ' + (err.message || err));
+    }
+  });
+
+  // Отправка и отмена кружочка / голосового
+  vcSendBtn.addEventListener('click', () => finishAndSendRecording());
+
+  vcCancelBtn.addEventListener('click', () => {
+    if (!isRecording || !activeMediaRecorder) return;
+    recordCanceled = true;
+    if (activeMediaRecorder.state !== 'inactive') {
+      activeMediaRecorder.stop();
+    } else {
+      cleanupRecordingUI();
+    }
+  });
 
   function finishAndSendRecording() {
     if (!isRecording || !activeMediaRecorder) return;
     recordCanceled = false;
-    if (activeMediaRecorder.state === 'recording') {
+    if (activeMediaRecorder.state !== 'inactive') {
       activeMediaRecorder.stop();
     }
   }
@@ -1743,11 +2053,12 @@
   cancelRecordBtn.addEventListener('click', () => {
     if (!isRecording || !activeMediaRecorder) return;
     recordCanceled = true;
-    if (activeMediaRecorder.state === 'recording') {
+    if (activeMediaRecorder.state !== 'inactive') {
       activeMediaRecorder.stop();
     }
   });
 
+  // 15. Отправка и Редактирование текстовых сообщений
   async function handleSendText() {
     if (!activeRoom) return;
     let text = messageInput.value.trim();
@@ -1755,11 +2066,47 @@
     messageInput.value = '';
     updateSmartActionButtonUI();
 
+    // Если редактируем существующее сообщение
+    if (editingMsg) {
+      const targetId = editingMsg.id;
+      const origCreatedAt = editingMsg.created_at;
+      const quotePrefix = editingMsg.quoteLine ? `>>${editingMsg.quoteLine}\n` : '';
+      const fullPlain = `[edit]${quotePrefix}${text}`;
+      clearReplyOrEditBar();
+
+      const encryptedContent = await encryptTextForRoom(fullPlain, activeRoom);
+
+      // Обновляем локально
+      const idx = roomMessages.findIndex((m) => m.id === targetId);
+      if (idx !== -1) {
+        roomMessages[idx].content = encryptedContent;
+        await renderMessages();
+      }
+
+      // Заменяем запись в Supabase с сохранением исходного id и времени created_at
+      await supabaseClient.from('messages').delete().eq('id', targetId);
+      const { error } = await supabaseClient.from('messages').insert({
+        id: targetId,
+        room_id: activeRoom.id,
+        sender_id: currentUser.id,
+        sender_name: currentUser.display_name,
+        sender_color: currentUser.color,
+        content: encryptedContent,
+        media_type: 'text',
+        media_url: null,
+        created_at: origCreatedAt
+      });
+
+      if (error) {
+        alert('Не удалось сохранить изменения: ' + error.message);
+      }
+      return;
+    }
+
     if (replyToMsg) {
       const shortQuote = replyToMsg.text.slice(0, 70);
       text = `>>${replyToMsg.author}: ${shortQuote}\n${text}`;
-      replyToMsg = null;
-      replyPreviewBar.classList.add('hidden');
+      clearReplyOrEditBar();
     }
 
     const encryptedContent = await encryptTextForRoom(text, activeRoom);
@@ -1798,11 +2145,11 @@
     }
   }
 
-  // 15. Realtime подписка
+  // 16. Realtime подписка
   function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
-    realtimeChannel = supabaseClient.channel('pulse-global-v4', {
+    realtimeChannel = supabaseClient.channel('pulse-global-v5', {
       config: {
         presence: { key: currentUser.id }
       }
@@ -1843,10 +2190,14 @@
           playNotificationSound();
         }
         if (activeRoom && incoming.room_id === activeRoom.id) {
-          if (!roomMessages.some((m) => m.id === incoming.id)) {
+          const existingIdx = roomMessages.findIndex((m) => m.id === incoming.id);
+          if (existingIdx !== -1) {
+            roomMessages[existingIdx] = incoming;
+          } else {
             roomMessages.push(incoming);
-            await renderMessages();
+            roomMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
           }
+          await renderMessages();
           updateActiveRoomHeaderUI();
         } else {
           await refreshDirectoryAndRooms();
@@ -1855,8 +2206,10 @@
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, async (payload) => {
         const deletedId = payload.old?.id;
         if (deletedId && activeRoom) {
-          roomMessages = roomMessages.filter((m) => m.id !== deletedId);
-          await renderMessages();
+          // Небольшая задержка на случай, если удаление было частью редактирования (delete + insert)
+          setTimeout(async () => {
+            await loadMessages(activeRoom.id);
+          }, 250);
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, () => {
@@ -1874,13 +2227,6 @@
         }
       });
   }
-
-  logoutBtn.addEventListener('click', async () => {
-    await supabaseClient.auth.signOut();
-    activeRoom = null;
-    appShell.classList.add('hidden');
-    authScreen.classList.remove('hidden');
-  });
 
   function getSupportedAudioMime() {
     const list = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'];

@@ -86,42 +86,21 @@
     </div>
   </div>
 
-  <!-- Модальное окно: Редактирование профиля, аватарки, телефона и темы -->
+  <!-- Единый раздел «Настройки» (Профиль, Оформление, Звук, Безопасность и Выход с подтверждением) -->
   <div id="profileModal" class="modal-backdrop hidden">
     <div class="auth-card">
-      <h2 style="font-size:18px; margin-bottom:4px;">Настройки профиля</h2>
-      <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:14px;">Друзья могут найти вас по @username или номеру телефона.</p>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+        <h2 style="font-size:19px;">Настройки</h2>
+        <button id="closeProfileBtn" class="icon-btn" type="button" style="width:32px; height:32px;">✕</button>
+      </div>
 
+      <div class="settings-section-title">Профиль</div>
       <div class="avatar-upload-row">
         <div id="editAvatarPreview" class="avatar" style="width:58px; height:58px; font-size:20px;">А</div>
         <div>
           <input id="avatarFileInput" type="file" accept="image/*" class="hidden" />
-          <button id="uploadAvatarBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Загрузить фото аватарки</button>
+          <button id="uploadAvatarBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Изменить фото аватарки</button>
           <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">JPG или PNG, сожмётся автоматически</div>
-        </div>
-      </div>
-
-      <div class="field-group">
-        <label>Тема оформления</label>
-        <div class="theme-pills">
-          <button type="button" class="theme-pill" data-set-theme="system">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-            Авто
-          </button>
-          <button type="button" class="theme-pill" data-set-theme="midnight">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-            </svg>
-            Тёмная
-          </button>
-          <button type="button" class="theme-pill" data-set-theme="daylight">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;">
-              <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-            </svg>
-            Светлая
-          </button>
         </div>
       </div>
 
@@ -148,19 +127,105 @@
         <input id="editBioInput" class="input-field" type="text" placeholder="Необязательно" />
       </div>
 
-      <button id="saveProfileBtn" class="btn-primary" type="button">Сохранить изменения</button>
-      <button id="closeProfileBtn" class="btn-ghost" type="button">Закрыть</button>
+      <button id="saveProfileBtn" class="btn-primary" type="button">Сохранить профиль</button>
+
+      <!-- Секция Оформление и Звук -->
+      <div class="settings-section">
+        <div class="settings-section-title">Оформление и уведомления</div>
+        <div class="theme-pills">
+          <button type="button" class="theme-pill" data-set-theme="system">Авто (Система)</button>
+          <button type="button" class="theme-pill" data-set-theme="midnight">Тёмная</button>
+          <button type="button" class="theme-pill" data-set-theme="daylight">Светлая</button>
+        </div>
+
+        <div class="settings-row">
+          <span>Звук новых сообщений</span>
+          <button id="soundToggleSwitch" class="toggle-switch on" type="button">
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Секция Аккаунт и Выход -->
+      <div class="settings-section">
+        <div class="settings-section-title">Аккаунт</div>
+        <button id="requestLogoutBtn" class="btn-danger" type="button">Выйти из аккаунта</button>
+      </div>
     </div>
   </div>
 
-  <!-- Плавающий круглый видоискатель при записи Видео-кружочка -->
-  <div id="videoCircleOverlay" class="video-circle-overlay hidden">
-    <div class="video-circle-recorder">
-      <video id="videoCirclePreview" autoplay muted playsinline></video>
+  <!-- Модальное окно подтверждения выхода из аккаунта -->
+  <div id="logoutConfirmModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:340px; text-align:center;">
+      <h2 style="font-size:18px; margin-bottom:8px;">Выйти из аккаунта?</h2>
+      <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:16px; line-height:1.45;">
+        Вы сможете снова войти в свой аккаунт в любой момент по почте и паролю.
+      </p>
+      <button id="confirmLogoutBtn" class="btn-danger" type="button">Да, выйти</button>
+      <button id="cancelLogoutBtn" class="btn-ghost" type="button">Отмена</button>
     </div>
-    <p style="margin-top:12px; color:#fff; font-size:14px; font-weight:600; text-shadow:0 2px 8px rgba(0,0,0,0.6);">
-      Запись видеокружочка...
-    </p>
+  </div>
+
+  <!-- Всплывающее меню действий при нажатии на сообщение (Ответить / Изменить / Копировать / Удалить) -->
+  <div id="msgActionModal" class="modal-backdrop hidden">
+    <div class="action-sheet-card">
+      <button id="sheetReplyBtn" class="sheet-item" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+        <span>Ответить</span>
+      </button>
+      <button id="sheetEditBtn" class="sheet-item hidden" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        <span>Изменить сообщение</span>
+      </button>
+      <button id="sheetCopyBtn" class="sheet-item hidden" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <span>Скопировать текст</span>
+      </button>
+      <button id="sheetDeleteBtn" class="sheet-item danger" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        <span>Удалить сообщение...</span>
+      </button>
+      <button id="sheetCancelBtn" class="btn-ghost" type="button" style="margin-top:4px;">Отмена</button>
+    </div>
+  </div>
+
+  <!-- Модальное окно подтверждения удаления сообщения (Только у меня / У всех) -->
+  <div id="deleteConfirmModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:350px; text-align:center;">
+      <h2 style="font-size:18px; margin-bottom:8px;">Удалить сообщение?</h2>
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px; line-height:1.45;">
+        Выберите, как именно вы хотите удалить выбранное сообщение:
+      </p>
+      <button id="deleteForMeBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--accent);">Удалить только у меня</button>
+      <button id="deleteForAllBtn" class="btn-danger hidden" type="button">Удалить у всех (с сервера)</button>
+      <button id="cancelDeleteModalBtn" class="btn-ghost" type="button">Отмена</button>
+    </div>
+  </div>
+
+  <!-- Интерактивный экран записи Видео-кружочка (Камера, Пауза, Отмена, Отправить) -->
+  <div id="videoCircleOverlay" class="video-circle-overlay hidden">
+    <div id="vcStatusLabel" style="margin-bottom:14px; color:#fff; font-size:15px; font-weight:600;">
+      🔴 Запись: <span id="vcTimerText">0:00</span>
+    </div>
+
+    <div class="video-circle-recorder">
+      <video id="videoCirclePreview" class="mirrored" autoplay muted playsinline></video>
+    </div>
+
+    <div class="video-circle-controls">
+      <button id="vcCancelBtn" class="vc-btn cancel" type="button" title="Отменить запись">
+        ✕ Отмена
+      </button>
+      <button id="vcFlipCamBtn" class="vc-btn" type="button" title="Перевернуть камеру">
+        🔄 Камера
+      </button>
+      <button id="vcPauseBtn" class="vc-btn" type="button" title="Поставить на паузу">
+        ⏸ Пауза
+      </button>
+      <button id="vcSendBtn" class="vc-btn send" type="button" title="Отправить кружочек">
+        ➤ Отправить
+      </button>
+    </div>
   </div>
 
   <!-- Модальное окно: Создание закрытой группы -->
@@ -202,7 +267,7 @@
       <h2 style="font-size:18px; margin-bottom:6px;">🔒 Сквозное шифрование (AES-256-GCM)</h2>
       <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px; line-height:1.45;">
         Все сообщения в этом диалоге уже автоматически шифруются на вашем устройстве алгоритмом <strong>AES-256-GCM</strong> перед отправкой в базу данных.<br/><br/>
-        Для максимальной секретности вы можете задать дополнительный <strong>секретный пароль диалога</strong> (сообщите его собеседнику лично) — тогда расшифровать чат не сможет никто в мире, включая сервер и нейросети.
+        Для максимальной секретности вы можете задать дополнительный <strong>секретный пароль диалога</strong> (сообщите его собеседнику лично).
       </p>
 
       <div class="field-group">
@@ -219,7 +284,7 @@
   <div id="appShell" class="app-shell hidden">
     <aside class="sidebar">
       <div class="sidebar-top">
-        <div id="myProfileTrigger" class="profile-trigger" title="Открыть настройки профиля">
+        <div id="myProfileTrigger" class="profile-trigger" title="Открыть настройки">
           <div class="avatar-wrap">
             <div id="myAvatar" class="avatar">А</div>
             <span class="online-dot" title="В сети"></span>
@@ -231,19 +296,9 @@
         </div>
 
         <div class="top-actions">
-          <button id="soundToggleBtn" class="icon-btn" title="Звук уведомлений включён" type="button">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-            </svg>
-          </button>
-          <button id="editProfileBtn" class="icon-btn" title="Редактировать профиль и тему" type="button">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button id="editProfileBtn" class="icon-btn" title="Настройки" type="button">
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-          </button>
-          <button id="logoutBtn" class="icon-btn" title="Выйти из аккаунта" type="button">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
             </svg>
           </button>
         </div>
@@ -313,7 +368,7 @@
 
         <div id="messagesViewport" class="messages-viewport"></div>
 
-        <!-- Полоса цитирования (Ответа на сообщение) -->
+        <!-- Полоса ответа или редактирования сообщения -->
         <div id="replyPreviewBar" class="reply-preview-bar hidden">
           <div style="min-width:0; flex:1;">
             <div id="replyTargetAuthor" style="font-weight:700; font-size:12px; color:var(--accent);">Ответ</div>
@@ -322,9 +377,8 @@
           <button id="cancelReplyBtn" class="icon-btn" type="button" style="width:28px; height:28px;">✕</button>
         </div>
 
-        <!-- Нижняя панель ввода (как в Telegram: одна скрепка слева + умная кнопка справа) -->
+        <!-- Нижняя панель ввода -->
         <footer class="composer">
-          <!-- Единая скрепка для Фото, Видео и Документов -->
           <input id="attachmentInput" type="file" class="hidden" />
           <button id="attachBtn" class="icon-btn" type="button" title="Прикрепить фото или файл">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -334,22 +388,21 @@
 
           <input id="messageInput" class="composer-input" type="text" placeholder="Сообщение..." autocomplete="off" />
 
-          <!-- Полоса записи голосового или видеокружочка -->
+          <!-- Полоса записи голосового сообщения (с паузой и отменой) -->
           <div id="recordingBar" class="recording-bar hidden">
-            <span class="rec-dot"></span>
+            <span id="recDot" class="rec-dot"></span>
             <span id="recordingTimer">0:00</span>
-            <span id="recordingHintText" style="font-weight:400; font-size:12px; opacity:0.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Вверх — закрепить 🔒</span>
+            <button id="pauseVoiceBtn" class="rec-ctrl-btn" type="button">⏸ Пауза</button>
             <button id="cancelRecordBtn" class="cancel-rec-link" type="button">Отмена</button>
           </div>
 
-          <!-- Умная кнопка 3-в-1 (Тап = Голос/Видео, Удержание = Запись, Вверх = Замок, Текст/Замок = Самолётик) -->
+          <!-- Умная кнопка 3-в-1 -->
           <div class="smart-action-wrap">
             <div id="lockHintPill" class="lock-hint-pill hidden">
               <span>🔒</span>
               <span>▲</span>
             </div>
-            <button id="smartActionBtn" class="circle-action-btn" type="button" title="Нажмите для смены Голос/Видео, удерживайте для записи">
-              <!-- Иконка подставляется динамически в app.js -->
+            <button id="smartActionBtn" class="circle-action-btn" type="button" title="Тап — смена Голос/Видео, Удержание — запись">
             </button>
           </div>
         </footer>
