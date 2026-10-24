@@ -108,7 +108,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
             </svg>
-            Как в системе
+            Авто
           </button>
           <button type="button" class="theme-pill" data-set-theme="midnight">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;">
@@ -153,17 +153,14 @@
     </div>
   </div>
 
-  <!-- Модальное окно: Запись Видео-кружочка -->
-  <div id="videoCircleModal" class="modal-backdrop hidden">
-    <div class="auth-card" style="text-align:center;">
-      <h2 style="font-size:18px; margin-bottom:4px;">Видеосообщение (Кружочек)</h2>
-      <p id="videoCircleTimer" style="font-size:13px; color:var(--danger); font-weight:600;">Идёт запись: 0:00</p>
-      <div class="video-circle-recorder">
-        <video id="videoCirclePreview" autoplay muted playsinline></video>
-      </div>
-      <button id="sendVideoCircleBtn" class="btn-primary" type="button">Отправить кружочек</button>
-      <button id="cancelVideoCircleBtn" class="btn-ghost" type="button">Отмена</button>
+  <!-- Плавающий круглый видоискатель при записи Видео-кружочка -->
+  <div id="videoCircleOverlay" class="video-circle-overlay hidden">
+    <div class="video-circle-recorder">
+      <video id="videoCirclePreview" autoplay muted playsinline></video>
     </div>
+    <p style="margin-top:12px; color:#fff; font-size:14px; font-weight:600; text-shadow:0 2px 8px rgba(0,0,0,0.6);">
+      Запись видеокружочка...
+    </p>
   </div>
 
   <!-- Модальное окно: Создание закрытой группы -->
@@ -235,7 +232,7 @@
 
         <div class="top-actions">
           <button id="soundToggleBtn" class="icon-btn" title="Звук уведомлений включён" type="button">
-            <svg id="soundIconOn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
             </svg>
           </button>
@@ -300,7 +297,7 @@
               <div id="activeRoomAvatar" class="avatar">П</div>
               <span id="activeRoomOnlineDot" class="online-dot hidden"></span>
             </div>
-            <div>
+            <div style="min-width:0;">
               <div id="activeRoomTitle" class="header-title">Диалог</div>
               <div id="activeRoomStatus" class="header-status">@username</div>
             </div>
@@ -325,51 +322,36 @@
           <button id="cancelReplyBtn" class="icon-btn" type="button" style="width:28px; height:28px;">✕</button>
         </div>
 
+        <!-- Нижняя панель ввода (как в Telegram: одна скрепка слева + умная кнопка справа) -->
         <footer class="composer">
-          <!-- Отправка фотографии -->
-          <input id="photoInput" type="file" accept="image/*" class="hidden" />
-          <button id="attachPhotoBtn" class="icon-btn" type="button" title="Отправить фотографию">
-            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
-            </svg>
-          </button>
-
-          <!-- Отправка любого файла / документа -->
-          <input id="docInput" type="file" class="hidden" />
-          <button id="attachDocBtn" class="icon-btn" type="button" title="Прикрепить любой файл или документ">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <!-- Единая скрепка для Фото, Видео и Документов -->
+          <input id="attachmentInput" type="file" class="hidden" />
+          <button id="attachBtn" class="icon-btn" type="button" title="Прикрепить фото или файл">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
             </svg>
           </button>
 
-          <input id="messageInput" class="composer-input" type="text" placeholder="Зашифрованное сообщение..." autocomplete="off" />
+          <input id="messageInput" class="composer-input" type="text" placeholder="Сообщение..." autocomplete="off" />
 
+          <!-- Полоса записи голосового или видеокружочка -->
           <div id="recordingBar" class="recording-bar hidden">
             <span class="rec-dot"></span>
             <span id="recordingTimer">0:00</span>
-            <span style="font-weight:400; font-size:12px; opacity:0.85;">Нажмите микрофон для отправки</span>
-            <button id="cancelVoiceBtn" class="icon-btn" type="button" title="Отменить" style="margin-left:auto; width:28px; height:28px;">✕</button>
+            <span id="recordingHintText" style="font-weight:400; font-size:12px; opacity:0.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Вверх — закрепить 🔒</span>
+            <button id="cancelRecordBtn" class="cancel-rec-link" type="button">Отмена</button>
           </div>
 
-          <!-- Запись видеокружочка (как в Telegram) -->
-          <button id="videoCircleBtn" class="icon-btn" type="button" title="Записать видеокружочек">
-            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-            </svg>
-          </button>
-
-          <!-- Запись голосового сообщения -->
-          <button id="voiceBtn" class="icon-btn" type="button" title="Записать голосовое сообщение">
-            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
-            </svg>
-          </button>
-
-          <button id="sendBtn" class="circle-action-btn" type="button" title="Отправить">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="transform:translateX(1px);">
-              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-          </button>
+          <!-- Умная кнопка 3-в-1 (Тап = Голос/Видео, Удержание = Запись, Вверх = Замок, Текст/Замок = Самолётик) -->
+          <div class="smart-action-wrap">
+            <div id="lockHintPill" class="lock-hint-pill hidden">
+              <span>🔒</span>
+              <span>▲</span>
+            </div>
+            <button id="smartActionBtn" class="circle-action-btn" type="button" title="Нажмите для смены Голос/Видео, удерживайте для записи">
+              <!-- Иконка подставляется динамически в app.js -->
+            </button>
+          </div>
         </footer>
       </div>
     </main>
