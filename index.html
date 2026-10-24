@@ -164,9 +164,10 @@
         </div>
       </div>
 
-      <!-- Секция Аккаунт и Выход -->
+      <!-- Секция Пригласить друга и Выход -->
       <div class="settings-section">
-        <div class="settings-section-title">Аккаунт</div>
+        <div class="settings-section-title">Друзья и аккаунт</div>
+        <button id="shareInviteBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--accent); margin-bottom:6px;">🔗 Поделиться ссылкой на мессенджер</button>
         <button id="requestLogoutBtn" class="btn-danger" type="button">Выйти из аккаунта</button>
       </div>
     </div>
@@ -184,7 +185,7 @@
     </div>
   </div>
 
-  <!-- Всплывающее меню действий при нажатии на сообщение (Быстрые реакции + Ответить / Изменить / Копировать / Удалить) -->
+  <!-- Всплывающее меню действий при нажатии на сообщение (Быстрые реакции + Ответить / Переслать / Изменить / Копировать / Удалить) -->
   <div id="msgActionModal" class="modal-backdrop hidden">
     <div class="action-sheet-card">
       <div class="reaction-picker-bar">
@@ -199,6 +200,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
         <span>Ответить</span>
       </button>
+      <button id="sheetForwardBtn" class="sheet-item" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>
+        <span>Переслать в другой чат...</span>
+      </button>
       <button id="sheetEditBtn" class="sheet-item hidden" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         <span>Изменить сообщение</span>
@@ -212,6 +217,16 @@
         <span>Удалить сообщение...</span>
       </button>
       <button id="sheetCancelBtn" class="btn-ghost" type="button" style="margin-top:4px;">Отмена</button>
+    </div>
+  </div>
+
+  <!-- Модальное окно выбора чата для пересылки сообщения -->
+  <div id="forwardModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:360px;">
+      <h2 style="font-size:18px; margin-bottom:6px;">Переслать сообщение</h2>
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">Выберите диалог, куда отправить сообщение:</p>
+      <div id="forwardRoomsList" class="member-picker" style="max-height:240px;"></div>
+      <button id="cancelForwardBtn" class="btn-ghost" type="button">Отмена</button>
     </div>
   </div>
 
@@ -375,7 +390,7 @@
         <p>Найдите друга по <strong>@username</strong> или <strong>номеру телефона</strong> в поиске слева. Все чаты защищены сквозным шифрованием <strong>AES-256</strong>.</p>
       </div>
 
-      <div id="activeChatView" class="hidden" style="display:flex; flex-direction:column; height:100%; width:100%;">
+      <div id="activeChatView" class="hidden" style="display:flex; flex-direction:column; height:100%; width:100%; position:relative;">
         <header class="chat-header">
           <div id="chatHeaderTrigger" class="chat-header-info" title="Информация о чате">
             <button id="mobileBackBtn" class="icon-btn mobile-back" type="button">
@@ -402,6 +417,9 @@
         </header>
 
         <div id="messagesViewport" class="messages-viewport"></div>
+
+        <!-- Плавающая кнопка прокрутки в самый низ -->
+        <button id="scrollBottomBtn" class="scroll-bottom-btn hidden" type="button" title="Вниз к новым сообщениям">↓</button>
 
         <!-- Полоса ответа или редактирования сообщения -->
         <div id="replyPreviewBar" class="reply-preview-bar hidden">

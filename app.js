@@ -1,4 +1,4 @@
-// Pulse Messenger v8 — Системные Push-уведомления и всплывающий баннер новых сообщений, мгновенное переключение диалогов без мелькания старого чата, счётчики непрочитанных, быстрые реакции
+// Pulse Messenger v9 — Мгновенная предзагрузка чатов без мелькания, превью и время последнего сообщения в списке диалогов, Push-уведомления и баннер, пересылка сообщений, кликабельные ссылки и быстрые реакции
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -59,20 +59,26 @@
   const saveProfileBtn = document.getElementById('saveProfileBtn');
   const closeProfileBtn = document.getElementById('closeProfileBtn');
   const themePills = Array.from(document.querySelectorAll('[data-set-theme]'));
+  const shareInviteBtn = document.getElementById('shareInviteBtn');
   const requestLogoutBtn = document.getElementById('requestLogoutBtn');
 
   const logoutConfirmModal = document.getElementById('logoutConfirmModal');
   const confirmLogoutBtn = document.getElementById('confirmLogoutBtn');
   const cancelLogoutBtn = document.getElementById('cancelLogoutBtn');
 
-  // DOM: Меню действий над сообщением и подтверждение удаления
+  // DOM: Меню действий над сообщением, пересылка и подтверждение удаления
   const msgActionModal = document.getElementById('msgActionModal');
   const reactEmojiBtns = Array.from(document.querySelectorAll('[data-react]'));
   const sheetReplyBtn = document.getElementById('sheetReplyBtn');
+  const sheetForwardBtn = document.getElementById('sheetForwardBtn');
   const sheetEditBtn = document.getElementById('sheetEditBtn');
   const sheetCopyBtn = document.getElementById('sheetCopyBtn');
   const sheetDeleteBtn = document.getElementById('sheetDeleteBtn');
   const sheetCancelBtn = document.getElementById('sheetCancelBtn');
+
+  const forwardModal = document.getElementById('forwardModal');
+  const forwardRoomsList = document.getElementById('forwardRoomsList');
+  const cancelForwardBtn = document.getElementById('cancelForwardBtn');
 
   const deleteConfirmModal = document.getElementById('deleteConfirmModal');
   const deleteForMeBtn = document.getElementById('deleteForMeBtn');
@@ -130,6 +136,7 @@
   const activeRoomTitle = document.getElementById('activeRoomTitle');
   const activeRoomStatus = document.getElementById('activeRoomStatus');
   const messagesViewport = document.getElementById('messagesViewport');
+  const scrollBottomBtn = document.getElementById('scrollBottomBtn');
 
   const replyPreviewBar = document.getElementById('replyPreviewBar');
   const replyTargetAuthor = document.getElementById('replyTargetAuthor');
@@ -162,8 +169,9 @@
   let activeRoom = null;
   let roomMessages = [];
 
-  // Мгновенный кэш сообщений по комнатам (чтобы при переключении с «Избранного» на Артёма не мелькал старый чат!)
+  // Мгновенный кэш сообщений и превью последнего сообщения по комнатам
   const roomMessagesCache = new Map();
+  const roomSummaryMap = new Map(); // roomId -> { preview, timeStr, timestamp }
   let currentSelectingRoomId = null;
 
   // Счётчики непрочитанных сообщений по комнатам
@@ -173,8 +181,8 @@
 
   // Состояние ответа / редактирования / выбранного сообщения
   let replyToMsg = null;
-  let editingMsg = null; // { id, created_at, quoteLine, plainText }
-  let selectedMsgContext = null; // { msg, plainText, quoteLine, isEdited }
+  let editingMsg = null;
+  let selectedMsgContext = null;
 
   const onlineUserIds = new Set();
   const typingByRoom = new Map();
@@ -274,6 +282,18 @@
   });
   syncViewportHeight();
 
+  // Плавающая кнопка прокрутки вниз в чате
+  if (messagesViewport && scrollBottomBtn) {
+    messagesViewport.addEventListener('scroll', () => {
+      const distFromBottom =
+        messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+      scrollBottomBtn.classList.toggle('hidden', distFromBottom < 180);
+    });
+    scrollBottomBtn.addEventListener('click', () => {
+      messagesViewport.scrollTo({ top: messagesViewport.scrollHeight, behavior: 'smooth' });
+    });
+  }
+
   // 0.5. PUSH-УВЕДОМЛЕНИЯ И ВСПЛЫВАЮЩИЙ БАННЕР НОВЫХ СООБЩЕНИЙ
   function updatePushPermissionUI() {
     const supported = 'Notification' in window;
@@ -308,7 +328,6 @@
         pushStatusSubtext.textContent = 'Разрешите уведомления для Pulse в настройках телефона';
       }
     } else {
-      // default — ещё не включены, показываем заметную плашку в списке диалогов
       if (pushPromptBanner) pushPromptBanner.classList.remove('hidden');
       if (enablePushInSettingsBtn) {
         enablePushInSettingsBtn.textContent = 'Включить';
@@ -427,6 +446,102 @@
     document.title = total > 0 ? `(${total}) Pulse — Защищённый мессенджер` : 'Pulse — Защищённый мессенджер';
   }
 
+  async function extractMessagePreviewText(msg, room) {
+    if (!msg) return '';
+    if (msg.media_type === 'voice') return '🎤 Голосовое сообщение';
+    if (msg.media_type === 'video_circle') return '📹 Видеокружочек';
+    if (msg.media_type === 'image') return '📷 Фотография';
+    if (msg.media_type === 'file') return '📎 Файл';
+    if (msg.content) {
+      const decrypted = await decryptTextForRoom(msg.content, room);
+      const cleaned = decrypted
+        .replace(/^> [^\n]+\n/, '')
+        .replace(/\n\[edited\]$/, '')
+        .replace(/\n\[react:[^\]]+\]$/, '')
+        .trim();
+      return cleaned || 'Сообщение';
+    }
+    return 'Сообщение';
+  }
+
+  function formatShortRoomTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+    const yesterday = new Date();
+    yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) {
+      return 'Вчера';
+    }
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  }
+
+  async function updateSingleRoomSummaryFromMessages(room, msgs) {
+    if (!room) return;
+    const hiddenIds = getLocallyHiddenMsgIds();
+    const visible = (msgs || []).filter((m) => !hiddenIds.has(m.id));
+    if (visible.length === 0) {
+      roomSummaryMap.delete(room.id);
+      return;
+    }
+    const lastMsg = visible[visible.length - 1];
+    const rawPreview = await extractMessagePreviewText(lastMsg, room);
+    const prefix = lastMsg.sender_id === currentUser.id ? 'Вы: ' : '';
+    roomSummaryMap.set(room.id, {
+      preview: `${prefix}${rawPreview}`,
+      timeStr: formatShortRoomTime(lastMsg.created_at),
+      timestamp: new Date(lastMsg.created_at).getTime()
+    });
+  }
+
+  // Предзагрузка сообщений всех диалогов при старте — обеспечивает 0 мс переключение между чатами и превью в сайдбаре!
+  async function preloadAllRoomsMessages() {
+    if (!currentUser || !supabaseClient || myRooms.length === 0) return;
+    const roomIds = myRooms.map((r) => r.id);
+    const { data, error } = await supabaseClient
+      .from('messages')
+      .select('*')
+      .in('room_id', roomIds)
+      .order('created_at', { ascending: true })
+      .limit(800);
+
+    if (error || !data) return;
+
+    const grouped = new Map();
+    roomIds.forEach((id) => grouped.set(id, []));
+    data.forEach((m) => {
+      if (!grouped.has(m.room_id)) grouped.set(m.room_id, []);
+      grouped.get(m.room_id).push(m);
+    });
+
+    await Promise.all(
+      myRooms.map(async (room) => {
+        const list = grouped.get(room.id) || [];
+        roomMessagesCache.set(room.id, list);
+
+        // Считаем непрочитанные сообщения из базы (если этот чат сейчас не открыт)
+        if (!activeRoom || activeRoom.id !== room.id) {
+          const unreadCount = list.filter(
+            (m) => m.sender_id !== currentUser.id && !m.is_read
+          ).length;
+          if (unreadCount > 0) {
+            unreadCounts.set(room.id, unreadCount);
+          } else {
+            unreadCounts.delete(room.id);
+          }
+        }
+
+        await updateSingleRoomSummaryFromMessages(room, list);
+      })
+    );
+
+    updateAppIconBadge();
+    renderSidebarList();
+  }
+
   async function handleIncomingMessageNotification(incoming) {
     if (!currentUser || incoming.sender_id === currentUser.id) return;
 
@@ -441,33 +556,14 @@
       activeRoom &&
       activeRoom.id === incoming.room_id &&
       !document.hidden &&
-      (window.innerWidth > 820 || appShell.classList.contains('chat-active'));
+      (window.innerWidth > 768 || appShell.classList.contains('chat-active'));
 
     playNotificationSound();
     if (navigator.vibrate) {
       try { navigator.vibrate([120, 60, 120]); } catch (e) {}
     }
 
-    // Расшифровываем текст для красивого превью в уведомлении
-    let previewText = 'Новое сообщение';
-    if (incoming.media_type === 'voice') {
-      previewText = '🎤 Голосовое сообщение';
-    } else if (incoming.media_type === 'video_circle') {
-      previewText = '📹 Видеокружочек';
-    } else if (incoming.media_type === 'image') {
-      previewText = '📷 Фотография';
-    } else if (incoming.media_type === 'file') {
-      previewText = '📎 Файл';
-    } else if (incoming.content) {
-      const decrypted = await decryptTextForRoom(incoming.content, room);
-      const cleaned = decrypted
-        .replace(/^> [^\n]+\n/, '')
-        .replace(/\n\[edited\]$/, '')
-        .replace(/\n\[react:[^\]]+\]$/, '')
-        .trim();
-      previewText = cleaned || 'Новое сообщение';
-    }
-
+    const previewText = await extractMessagePreviewText(incoming, room);
     const senderProfile = allProfiles.find((p) => p.id === incoming.sender_id);
     const senderName = senderProfile ? senderProfile.display_name : getRoomPresentation(room).title;
 
@@ -477,7 +573,6 @@
       updateAppIconBadge();
       renderSidebarList();
 
-      // Показываем всплывающий баннер сверху внутри приложения
       showInAppToast({
         title: senderName,
         text: previewText,
@@ -485,12 +580,10 @@
         roomId: room.id
       });
 
-      // И отправляем системное Push-уведомление на телефон / компьютер
       sendSystemNotification(senderName, previewText, room.id);
     }
   }
 
-  // Слушаем клик по системному Push-уведомлению от Service Worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', (event) => {
       if (event.data && event.data.type === 'OPEN_ROOM' && event.data.roomId) {
@@ -579,6 +672,26 @@
       osc1.stop(now + 0.29);
       osc2.stop(now + 0.29);
     } catch (e) {}
+  }
+
+  // Кнопка «Поделиться ссылкой на мессенджер»
+  if (shareInviteBtn) {
+    shareInviteBtn.addEventListener('click', async () => {
+      const shareUrl = 'https://rickaveri.github.io/pulse/';
+      const shareText = `Добавляйся ко мне в защищённый мессенджер Pulse! Мой никнейм: @${currentUser ? currentUser.username : ''}`;
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: 'Pulse Messenger', text: shareText, url: shareUrl });
+          return;
+        } catch (e) {}
+      }
+      try {
+        await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`);
+        alert('Ссылка и ваш @username скопированы в буфер обмена!');
+      } catch (e) {
+        prompt('Скопируйте ссылку для приглашения друга:', shareUrl);
+      }
+    });
   }
 
   // 3. Строгая проверка надёжности пароля
@@ -1004,6 +1117,7 @@
 
     await ensureSavedMessagesRoom();
     await refreshDirectoryAndRooms();
+    await preloadAllRoomsMessages();
     subscribeRealtime();
 
     setInterval(async () => {
@@ -1015,12 +1129,13 @@
     }, 45000);
   }
 
-  // При возвращении в приложение с телефона сразу обновляем сообщения и статус
   document.addEventListener('visibilitychange', async () => {
     if (!document.hidden && currentUser && supabaseClient) {
       await refreshDirectoryAndRooms();
+      await preloadAllRoomsMessages();
       if (activeRoom) {
         await loadMessages(activeRoom.id, { silent: true });
+        await markRoomMessagesAsRead(activeRoom.id);
       }
     }
   });
@@ -1151,7 +1266,6 @@
     await refreshDirectoryAndRooms();
   });
 
-  // Подтверждение выхода из аккаунта
   requestLogoutBtn.addEventListener('click', () => {
     profileModal.classList.add('hidden');
     logoutConfirmModal.classList.remove('hidden');
@@ -1296,11 +1410,15 @@
       const sortedRooms = [...myRooms].sort((a, b) => {
         const aSaved = (a.direct_key || '').startsWith('saved_') ? 1 : 0;
         const bSaved = (b.direct_key || '').startsWith('saved_') ? 1 : 0;
-        return bSaved - aSaved;
+        if (aSaved !== bSaved) return bSaved - aSaved;
+        const aTs = roomSummaryMap.get(a.id)?.timestamp || new Date(a.created_at || 0).getTime();
+        const bTs = roomSummaryMap.get(b.id)?.timestamp || new Date(b.created_at || 0).getTime();
+        return bTs - aTs;
       });
 
       sortedRooms.forEach((room) => {
         const pres = getRoomPresentation(room);
+        const summary = roomSummaryMap.get(room.id);
         const unread = unreadCounts.get(room.id) || 0;
         const item = document.createElement('div');
         item.className = `chat-item ${activeRoom && activeRoom.id === room.id ? 'active' : ''}`;
@@ -1322,14 +1440,20 @@
           avatarWrap.appendChild(dot);
         }
 
+        const subLine = pres.isTyping
+          ? pres.subtitle
+          : (summary && summary.preview ? summary.preview : pres.subtitle);
+        const timeLabel = summary && summary.timeStr ? summary.timeStr : '';
+
         const body = document.createElement('div');
         body.className = 'chat-item-body';
         body.innerHTML = `
           <div class="chat-item-top">
-            <span class="chat-item-name">${escapeHtml(pres.title)}</span>
+            <span class="chat-item-title">${escapeHtml(pres.title)}</span>
+            ${timeLabel ? `<span class="chat-item-time">${escapeHtml(timeLabel)}</span>` : ''}
           </div>
           <div class="chat-item-bottom">
-            <div class="chat-item-sub ${pres.isTyping ? 'typing' : ''}">${escapeHtml(pres.subtitle)}</div>
+            <div class="chat-item-sub ${pres.isTyping ? 'typing' : ''}">${escapeHtml(subLine)}</div>
             ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
           </div>
         `;
@@ -1394,7 +1518,7 @@
       body.className = 'chat-item-body';
       body.innerHTML = `
         <div class="chat-item-top">
-          <span class="chat-item-name">${escapeHtml(person.display_name)}</span>
+          <span class="chat-item-title">${escapeHtml(person.display_name)}</span>
         </div>
         <div class="chat-item-sub">${escapeHtml(subParts.join(' • '))}</div>
       `;
@@ -1514,12 +1638,11 @@
     if (newRoom) await selectRoom(newRoom);
   });
 
-  // 10. Выбор комнаты и МГНОВЕННАЯ загрузка истории без мелькания старого диалога
+  // 10. Выбор комнаты и МГНОВЕННОЕ отображение без мелькания предыдущего диалога
   async function selectRoom(room) {
     activeRoom = room;
     currentSelectingRoomId = room.id;
 
-    // Сбрасываем счётчик непрочитанных для открытого диалога
     if (unreadCounts.has(room.id)) {
       unreadCounts.delete(room.id);
       updateAppIconBadge();
@@ -1528,15 +1651,16 @@
     clearComposerState();
     updateActiveRoomHeader();
 
-    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: сразу очищаем контейнер сообщений ДО показа экрана чата,
-    // чтобы ни на секунду не мелькал предыдущий открытый диалог (например, «Избранное»)!
+    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: синхронно очищаем экран ДО показа чата!
+    messagesViewport.innerHTML = '';
+    if (scrollBottomBtn) scrollBottomBtn.classList.add('hidden');
+
     const cachedMsgs = roomMessagesCache.get(room.id);
     if (cachedMsgs) {
       roomMessages = cachedMsgs;
       await renderMessages(room.id);
     } else {
       roomMessages = [];
-      messagesViewport.innerHTML = '';
     }
 
     emptyChatState.classList.add('hidden');
@@ -1617,7 +1741,7 @@
     await renderMessages(activeRoom.id);
   });
 
-  async function loadMessages(roomId, opts = {}) {
+  async function loadMessages(roomId) {
     const { data, error } = await supabaseClient
       .from('messages')
       .select('*')
@@ -1629,7 +1753,12 @@
     const fetched = data || [];
     roomMessagesCache.set(roomId, fetched);
 
-    // Если пользователь уже переключился в другой чат, не перезаписываем экран
+    const targetRoomObj = myRooms.find((r) => r.id === roomId);
+    if (targetRoomObj) {
+      await updateSingleRoomSummaryFromMessages(targetRoomObj, fetched);
+      renderSidebarList();
+    }
+
     if (!activeRoom || activeRoom.id !== roomId || currentSelectingRoomId !== roomId) return;
 
     roomMessages = fetched;
@@ -1658,6 +1787,15 @@
     return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
   }
 
+  // Преобразование ссылок в кликабельные <a> внутри текста сообщения
+  function renderTextWithLinks(text) {
+    const escaped = escapeHtml(text);
+    return escaped.replace(
+      /(https?:\/\/[^\s<]+)/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer" class="msg-link" onclick="event.stopPropagation()">$1</a>'
+    );
+  }
+
   async function renderMessages(targetRoomId) {
     if (!activeRoom) return;
     const roomSnapshot = activeRoom;
@@ -1673,7 +1811,6 @@
       })
     );
 
-    // Проверяем, что пока шла расшифровка, пользователь не переключился на другой чат
     if (!activeRoom || activeRoom.id !== roomSnapshot.id) return;
 
     messagesViewport.innerHTML = '';
@@ -1696,7 +1833,7 @@
       if (dKey !== lastDateKey) {
         lastDateKey = dKey;
         const sep = document.createElement('div');
-        sep.className = 'date-separator';
+        sep.className = 'date-divider date-separator';
         sep.innerHTML = `<span>${escapeHtml(formatDateSeparator(msg.created_at))}</span>`;
         messagesViewport.appendChild(sep);
       }
@@ -1706,7 +1843,7 @@
       const senderName = sender ? sender.display_name : 'Пользователь';
 
       const row = document.createElement('div');
-      row.className = `msg-row ${isMine ? 'mine' : 'theirs'}`;
+      row.className = `msg-row ${isMine ? 'own mine' : 'other theirs'}`;
 
       if (roomSnapshot.is_group && !isMine) {
         const authorEl = document.createElement('div');
@@ -1719,7 +1856,6 @@
       const isCircle = msg.media_type === 'video_circle';
       bubble.className = `msg-bubble ${isCircle ? 'circle-bubble' : ''}`;
 
-      // Разбор цитаты ответа, метки редактирования [edited] и реакций [react:...]
       let textBody = plain || '';
       let quoteLine = '';
       let isEdited = false;
@@ -1757,7 +1893,7 @@
       if (msg.media_url) {
         if (msg.media_type === 'image') {
           const img = document.createElement('img');
-          img.className = 'msg-image';
+          img.className = 'msg-photo msg-image';
           img.src = msg.media_url;
           img.alt = 'Фото';
           img.addEventListener('click', (ev) => {
@@ -1768,7 +1904,7 @@
           bubble.appendChild(img);
         } else if (msg.media_type === 'video_circle') {
           const circleWrap = document.createElement('div');
-          circleWrap.className = 'video-circle-msg';
+          circleWrap.className = 'video-note-wrap video-circle-msg';
           const vid = document.createElement('video');
           vid.src = msg.media_url;
           vid.playsInline = true;
@@ -1777,7 +1913,7 @@
           vid.preload = 'metadata';
 
           const badge = document.createElement('div');
-          badge.className = 'circle-play-badge';
+          badge.className = 'video-note-badge circle-play-badge';
           badge.textContent = '▶ Кружочек';
 
           circleWrap.addEventListener('click', (ev) => {
@@ -1800,14 +1936,14 @@
         } else {
           const fileName = textBody || 'Скачать файл';
           const fileLink = document.createElement('a');
-          fileLink.className = 'file-attachment';
+          fileLink.className = 'file-card file-attachment';
           fileLink.href = msg.media_url;
           fileLink.target = '_blank';
           fileLink.rel = 'noopener noreferrer';
           fileLink.addEventListener('click', (ev) => ev.stopPropagation());
           fileLink.innerHTML = `
-            <div class="file-icon">📎</div>
-            <div class="file-info">
+            <div class="file-icon-box file-icon">📎</div>
+            <div class="file-meta file-info">
               <div class="file-name">${escapeHtml(fileName)}</div>
               <div class="file-sub">Нажмите, чтобы открыть файл</div>
             </div>
@@ -1818,7 +1954,7 @@
 
       if (textBody && msg.media_type !== 'file') {
         const txt = document.createElement('div');
-        txt.textContent = textBody;
+        txt.innerHTML = renderTextWithLinks(textBody);
         bubble.appendChild(txt);
       }
 
@@ -1832,7 +1968,7 @@
 
       if (reactionEmoji) {
         const reactPill = document.createElement('span');
-        reactPill.style.background = 'rgba(255,255,255,0.16)';
+        reactPill.style.background = 'rgba(255,255,255,0.18)';
         reactPill.style.padding = '1px 6px';
         reactPill.style.borderRadius = '999px';
         reactPill.style.fontSize = '12px';
@@ -1883,7 +2019,7 @@
     messagesViewport.scrollTop = messagesViewport.scrollHeight;
   }
 
-  // 11. Меню действий над сообщением (Быстрые реакции + Ответить / Изменить / Скопировать / Удалить)
+  // 11. Меню действий над сообщением (Быстрые реакции + Ответить / Переслать / Изменить / Скопировать / Удалить)
   function openMessageActionSheet(ctx) {
     selectedMsgContext = ctx;
     const isMine = ctx.msg.sender_id === currentUser.id;
@@ -1903,7 +2039,6 @@
     if (e.target === msgActionModal) msgActionModal.classList.add('hidden');
   });
 
-  // Обработка нажатия на эмодзи-реакцию
   reactEmojiBtns.forEach((btn) => {
     btn.addEventListener('click', async () => {
       if (!selectedMsgContext || !activeRoom) return;
@@ -1929,7 +2064,7 @@
         .update({ content: encrypted })
         .eq('id', ctx.msg.id);
 
-      await loadMessages(activeRoom.id, { silent: true });
+      await loadMessages(activeRoom.id);
     });
   });
 
@@ -1939,6 +2074,50 @@
     msgActionModal.classList.add('hidden');
     setReplyMessage(msg, senderName, plainText);
   });
+
+  // Пересылка сообщения в любой другой чат (например, в «Избранное» или другу)
+  if (sheetForwardBtn) {
+    sheetForwardBtn.addEventListener('click', () => {
+      if (!selectedMsgContext) return;
+      msgActionModal.classList.add('hidden');
+      forwardRoomsList.innerHTML = '';
+
+      myRooms.forEach((targetRoom) => {
+        const pres = getRoomPresentation(targetRoom);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sheet-item';
+        btn.innerHTML = `<span><strong>${escapeHtml(pres.title)}</strong></span>`;
+        btn.addEventListener('click', async () => {
+          forwardModal.classList.add('hidden');
+          const { msg, senderName, plainText } = selectedMsgContext;
+          const forwardPlain = plainText
+            ? `> Переслано от ${senderName}\n${plainText}`
+            : `> Переслано от ${senderName}\n`;
+          const enc = await encryptTextForRoom(forwardPlain, targetRoom);
+
+          await supabaseClient.from('messages').insert({
+            room_id: targetRoom.id,
+            sender_id: currentUser.id,
+            content: enc,
+            media_url: msg.media_url || null,
+            media_type: msg.media_type || 'text'
+          });
+
+          await selectRoom(targetRoom);
+        });
+        forwardRoomsList.appendChild(btn);
+      });
+
+      forwardModal.classList.remove('hidden');
+    });
+  }
+
+  if (cancelForwardBtn) {
+    cancelForwardBtn.addEventListener('click', () => {
+      forwardModal.classList.add('hidden');
+    });
+  }
 
   sheetCopyBtn.addEventListener('click', async () => {
     if (!selectedMsgContext || !selectedMsgContext.plainText) return;
@@ -1989,7 +2168,11 @@
     hideMsgLocally(selectedMsgContext.msg.id);
     deleteConfirmModal.classList.add('hidden');
     selectedMsgContext = null;
-    if (activeRoom) await renderMessages(activeRoom.id);
+    if (activeRoom) {
+      await updateSingleRoomSummaryFromMessages(activeRoom, roomMessages);
+      renderSidebarList();
+      await renderMessages(activeRoom.id);
+    }
   });
 
   deleteForAllBtn.addEventListener('click', async () => {
@@ -1999,7 +2182,7 @@
     selectedMsgContext = null;
 
     await supabaseClient.from('messages').delete().eq('id', msgId);
-    await loadMessages(activeRoom.id, { silent: true });
+    await loadMessages(activeRoom.id);
   });
 
   function buildCustomVoicePlayer(audioUrl) {
@@ -2016,10 +2199,11 @@
     playBtn.textContent = '▶';
 
     const barsWrap = document.createElement('div');
-    barsWrap.className = 'voice-bars';
+    barsWrap.className = 'voice-wave voice-bars';
     const heights = [35, 65, 50, 85, 45, 95, 60, 75, 40, 88, 55, 70, 50, 80, 45, 60, 35, 50];
     const barEls = heights.map((h) => {
       const b = document.createElement('span');
+      b.className = 'voice-bar';
       b.style.height = `${h}%`;
       barsWrap.appendChild(b);
       return b;
@@ -2127,7 +2311,6 @@
 
     messageInput.value = '';
 
-    // Режим редактирования существующего сообщения
     if (editingMsg) {
       const editTarget = editingMsg;
       clearComposerState();
@@ -2161,7 +2344,7 @@
         });
       }
 
-      await loadMessages(activeRoom.id, { silent: true });
+      await loadMessages(activeRoom.id);
       return;
     }
 
@@ -2185,7 +2368,7 @@
     if (error) {
       alert('Ошибка отправки: ' + error.message);
     } else {
-      await loadMessages(activeRoom.id, { silent: true });
+      await loadMessages(activeRoom.id);
     }
   }
 
@@ -2214,7 +2397,6 @@
     }
   });
 
-  // Вложения (фото и файлы)
   attachBtn.addEventListener('click', () => {
     if (!activeRoom) return;
     attachmentInput.click();
@@ -2253,13 +2435,12 @@
         media_url: pub.publicUrl,
         media_type: isImg ? 'image' : 'file'
       });
-      await loadMessages(activeRoom.id, { silent: true });
+      await loadMessages(activeRoom.id);
     } catch (err) {
       alert('Ошибка отправки файла: ' + (err.message || err));
     }
   });
 
-  // Жесты умной кнопки: короткий тап (переключение) vs удержание (запись) vs свайп вверх (замок)
   smartActionBtn.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     if (!activeRoom) return;
@@ -2436,7 +2617,7 @@
           media_url: pub.publicUrl,
           media_type: isVideo ? 'video_circle' : 'voice'
         });
-        await loadMessages(activeRoom.id, { silent: true });
+        await loadMessages(activeRoom.id);
       } catch (err) {
         alert('Не удалось отправить запись: ' + (err.message || err));
       }
@@ -2558,7 +2739,7 @@
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
     realtimeChannel = supabaseClient
-      .channel('pulse-live-v8', {
+      .channel('pulse-live-v9', {
         config: { presence: { key: currentUser.id } }
       })
       .on('presence', { event: 'sync' }, () => {
@@ -2591,17 +2772,23 @@
           }
 
           if (activeRoom && incoming.room_id === activeRoom.id) {
-            await loadMessages(activeRoom.id, { silent: true });
+            await loadMessages(activeRoom.id);
             await markRoomMessagesAsRead(activeRoom.id);
           } else if (incoming.room_id) {
-            // Обновляем фоновый кэш комнаты, чтобы при нажатии на неё сообщения открылись мгновенно
             const { data } = await supabaseClient
               .from('messages')
               .select('*')
               .eq('room_id', incoming.room_id)
               .order('created_at', { ascending: true })
               .limit(250);
-            if (data) roomMessagesCache.set(incoming.room_id, data);
+            if (data) {
+              roomMessagesCache.set(incoming.room_id, data);
+              const rm = myRooms.find((r) => r.id === incoming.room_id);
+              if (rm) {
+                await updateSingleRoomSummaryFromMessages(rm, data);
+                renderSidebarList();
+              }
+            }
           }
         }
       )
@@ -2610,6 +2797,7 @@
         { event: '*', schema: 'public', table: 'rooms' },
         async () => {
           await refreshDirectoryAndRooms();
+          await preloadAllRoomsMessages();
         }
       )
       .on(
