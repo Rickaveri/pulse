@@ -1,4 +1,4 @@
-// Pulse Messenger v11 — Закреплённые сообщения, поиск внутри диалога, ускорение голосовых (1x / 1.5x / 2x), автосохранение черновиков по чатам, двойной тап для лайка ❤️, полная совместимость с Supabase
+// Pulse Messenger v12 — Аудио- и видеозвонки без VPN (P2P WebRTC), галерея общих фото и вложений в карточке чата, скачивание вложений, закрепление сообщений, ускорение голосовых 1x/1.5x/2x, черновики и быстрые реакции
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -66,7 +66,7 @@
   const confirmLogoutBtn = document.getElementById('confirmLogoutBtn');
   const cancelLogoutBtn = document.getElementById('cancelLogoutBtn');
 
-  // DOM: Меню действий над сообщением, закрепление, пересылка и подтверждение удаления
+  // DOM: Меню действий над сообщением, закрепление, пересылка, скачивание и удаление
   const msgActionModal = document.getElementById('msgActionModal');
   const reactEmojiBtns = Array.from(document.querySelectorAll('[data-react]'));
   const sheetReplyBtn = document.getElementById('sheetReplyBtn');
@@ -74,6 +74,7 @@
   const sheetForwardBtn = document.getElementById('sheetForwardBtn');
   const sheetEditBtn = document.getElementById('sheetEditBtn');
   const sheetCopyBtn = document.getElementById('sheetCopyBtn');
+  const sheetDownloadBtn = document.getElementById('sheetDownloadBtn');
   const sheetDeleteBtn = document.getElementById('sheetDeleteBtn');
   const sheetCancelBtn = document.getElementById('sheetCancelBtn');
 
@@ -86,6 +87,20 @@
   const deleteForAllBtn = document.getElementById('deleteForAllBtn');
   const cancelDeleteModalBtn = document.getElementById('cancelDeleteModalBtn');
 
+  // DOM: Экран аудио/видеозвонков P2P WebRTC
+  const callOverlay = document.getElementById('callOverlay');
+  const callVideoStage = document.getElementById('callVideoStage');
+  const callRemoteVideo = document.getElementById('callRemoteVideo');
+  const callLocalVideo = document.getElementById('callLocalVideo');
+  const callPeerAvatar = document.getElementById('callPeerAvatar');
+  const callPeerName = document.getElementById('callPeerName');
+  const callStatusText = document.getElementById('callStatusText');
+  const callMuteBtn = document.getElementById('callMuteBtn');
+  const callAcceptBtn = document.getElementById('callAcceptBtn');
+  const callHangupBtn = document.getElementById('callHangupBtn');
+  const voiceCallBtn = document.getElementById('voiceCallBtn');
+  const videoCallBtn = document.getElementById('videoCallBtn');
+
   // DOM: Видеокружочки с управлением камерой и паузой
   const videoCircleOverlay = document.getElementById('videoCircleOverlay');
   const videoCirclePreview = document.getElementById('videoCirclePreview');
@@ -95,7 +110,7 @@
   const vcPauseBtn = document.getElementById('vcPauseBtn');
   const vcSendBtn = document.getElementById('vcSendBtn');
 
-  // DOM: Группы, карточка собеседника и E2EE
+  // DOM: Группы, карточка собеседника/чата с галереей и E2EE
   const groupModal = document.getElementById('groupModal');
   const newGroupBtn = document.getElementById('newGroupBtn');
   const groupNameInput = document.getElementById('groupNameInput');
@@ -110,6 +125,8 @@
   const peerHandle = document.getElementById('peerHandle');
   const peerPhone = document.getElementById('peerPhone');
   const peerBio = document.getElementById('peerBio');
+  const sharedMediaSection = document.getElementById('sharedMediaSection');
+  const sharedMediaGrid = document.getElementById('sharedMediaGrid');
   const closePeerModalBtn = document.getElementById('closePeerModalBtn');
 
   const e2eModal = document.getElementById('e2eModal');
@@ -183,7 +200,6 @@
   let currentSelectingRoomId = null;
   let activeChatFilterQuery = '';
 
-  // Черновики по комнатам
   function getRoomDraft(roomId) {
     return localStorage.getItem(`pulse_draft_${roomId}`) || '';
   }
@@ -197,7 +213,6 @@
     }
   }
 
-  // Счётчики непрочитанных сообщений по комнатам
   const unreadCounts = new Map();
   let toastTimeout = null;
   let toastTargetRoomId = null;
@@ -210,7 +225,6 @@
     localStorage.setItem(`pulse_read_ts_${roomId}`, String(ts || Date.now()));
   }
 
-  // Состояние ответа / редактирования / выбранного сообщения
   let replyToMsg = null;
   let editingMsg = null;
   let selectedMsgContext = null;
@@ -220,7 +234,6 @@
   let lastTypingBroadcastAt = 0;
   let soundEnabled = localStorage.getItem('pulse_sound') !== 'off';
 
-  // Список локально скрытых сообщений ("Удалить только у меня")
   function getLocallyHiddenMsgIds() {
     try {
       return new Set(JSON.parse(localStorage.getItem('pulse_hidden_msgs') || '[]'));
@@ -235,7 +248,7 @@
     localStorage.setItem('pulse_hidden_msgs', JSON.stringify(Array.from(set)));
   }
 
-  // Состояние записи (Голос / Видеокружочек) + Кэшированный доступ к микрофону
+  // Состояние записи (Голос / Видеокружочек)
   let recordMode = localStorage.getItem('pulse_rec_mode') === 'video' ? 'video' : 'voice';
   let cameraFacingMode = 'user';
   let isRecording = false;
@@ -279,7 +292,6 @@
     return await supabaseClient.from('messages').insert(payload).select();
   }
 
-  // Определение точного типа сообщения / служебного пакета
   function detectMessageKind(msg) {
     if (msg.content && msg.content.startsWith('__REACT__|')) {
       return 'reaction_packet';
@@ -1319,6 +1331,14 @@
     }
   });
 
+  window.addEventListener('online', async () => {
+    if (currentUser && supabaseClient) {
+      await refreshDirectoryAndRooms();
+      await preloadAllRoomsMessages();
+      if (activeRoom) await loadMessages(activeRoom.id);
+    }
+  });
+
   async function ensureSavedMessagesRoom() {
     const savedKey = `saved_${currentUser.id}`;
     const { data: existing } = await supabaseClient
@@ -1843,7 +1863,6 @@
     updateSmartActionButtonUI();
     updateActiveRoomHeader();
 
-    // Синхронно очищаем экран ДО показа чата!
     messagesViewport.innerHTML = '';
     if (scrollBottomBtn) scrollBottomBtn.classList.add('hidden');
     if (pinnedMsgBar) pinnedMsgBar.classList.add('hidden');
@@ -1878,6 +1897,11 @@
     });
     activeRoomOnlineDot.classList.toggle('hidden', !pres.online);
 
+    // Показываем кнопки аудио- и видеозвонка для личных чатов с друзьями
+    const canCallPeer = Boolean(pres.peer && !pres.isSaved);
+    if (voiceCallBtn) voiceCallBtn.classList.toggle('hidden', !canCallPeer);
+    if (videoCallBtn) videoCallBtn.classList.toggle('hidden', !canCallPeer);
+
     const hasCustomSecret = Boolean(getRoomCustomSecret(activeRoom.id));
     e2eBadgeText.textContent = hasCustomSecret ? 'AES-256 + Ключ' : 'AES-256';
   }
@@ -1895,26 +1919,77 @@
     syncViewportHeight();
   });
 
+  // Карточка собеседника / диалога + Галерея общих фотографий и файлов
   chatHeaderTrigger.addEventListener('click', (e) => {
     if (e.target.closest('#mobileBackBtn')) return;
     if (!activeRoom) return;
     const pres = getRoomPresentation(activeRoom);
-    if (!pres.peer) return;
 
     renderAvatarElement(peerAvatar, {
-      avatar_url: pres.peer.avatar_url,
-      letter: pres.peer.display_name,
-      color: pres.peer.color
+      avatar_url: pres.avatar_url,
+      letter: pres.letter,
+      color: pres.color
     });
-    peerName.textContent = pres.peer.display_name;
-    peerHandle.textContent = `@${pres.peer.username}`;
-    peerPhone.textContent = pres.peer.phone ? `Телефон: ${pres.peer.phone}` : 'Номер телефона скрыт';
-    if (pres.peer.bio) {
-      peerBio.textContent = pres.peer.bio;
-      peerBio.classList.remove('hidden');
+    peerName.textContent = pres.title;
+
+    if (pres.peer) {
+      peerHandle.textContent = `@${pres.peer.username}`;
+      peerPhone.textContent = pres.peer.phone ? `Телефон: ${pres.peer.phone}` : 'Номер телефона скрыт';
+      if (pres.peer.bio) {
+        peerBio.textContent = pres.peer.bio;
+        peerBio.classList.remove('hidden');
+      } else {
+        peerBio.classList.add('hidden');
+      }
     } else {
+      peerHandle.textContent = pres.subtitle;
+      peerPhone.textContent = '';
       peerBio.classList.add('hidden');
     }
+
+    // Заполняем галерею вложений из этого чата
+    if (sharedMediaGrid) {
+      sharedMediaGrid.innerHTML = '';
+      const mediaMsgs = roomMessages.filter((m) => Boolean(m.media_url));
+      if (mediaMsgs.length === 0) {
+        sharedMediaGrid.innerHTML = `<div style="grid-column:1/-1; font-size:12.5px; color:var(--text-muted); padding:8px 0;">В этом диалоге пока нет отправленных фото или файлов.</div>`;
+      } else {
+        mediaMsgs.slice().reverse().forEach((m) => {
+          const k = detectMessageKind(m);
+          if (k === 'image') {
+            const img = document.createElement('img');
+            img.className = 'shared-media-thumb';
+            img.src = m.media_url;
+            img.alt = 'Фото';
+            img.addEventListener('click', () => {
+              peerModal.classList.add('hidden');
+              lightboxImg.src = m.media_url;
+              lightbox.classList.remove('hidden');
+            });
+            sharedMediaGrid.appendChild(img);
+          } else {
+            const link = document.createElement('a');
+            link.href = m.media_url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.style.display = 'flex';
+            link.style.flexDirection = 'column';
+            link.style.alignItems = 'center';
+            link.style.justifyContent = 'center';
+            link.style.height = '78px';
+            link.style.background = 'var(--bg-input)';
+            link.style.border = '1px solid var(--border)';
+            link.style.borderRadius = '10px';
+            link.style.textDecoration = 'none';
+            link.style.color = 'var(--text-main)';
+            link.style.fontSize = '11px';
+            link.innerHTML = `<span style="font-size:20px;">${k === 'video_circle' ? '📹' : k === 'voice' ? '🎤' : '📎'}</span><span style="margin-top:3px;">${k === 'video_circle' ? 'Кружок' : k === 'voice' ? 'Голос' : 'Файл'}</span>`;
+            sharedMediaGrid.appendChild(link);
+          }
+        });
+      }
+    }
+
     peerModal.classList.remove('hidden');
   });
 
@@ -1980,7 +2055,6 @@
     );
   }
 
-  // Закреплённое сообщение в шапке диалога
   let currentPinnedTargetId = null;
   let currentPinPacketId = null;
 
@@ -2053,7 +2127,6 @@
 
     if (!activeRoom || activeRoom.id !== roomSnapshot.id) return;
 
-    // Отображение закреплённого сообщения (из пакета __PIN__ или localStorage)
     currentPinnedTargetId = null;
     currentPinPacketId = null;
     if (latestPinPacket) {
@@ -2086,7 +2159,6 @@
       pinnedMsgBar.classList.add('hidden');
     }
 
-    // Фильтрация по поиску внутри чата, если открыта строка поиска
     const filteredList = activeChatFilterQuery
       ? decryptedList.filter(({ plain }) => {
           const { textBody } = parseCleanMessageStruct(plain);
@@ -2283,7 +2355,6 @@
         row.appendChild(bubble);
       }
 
-      // Одиночный клик/тап — меню сообщения; двойной клик — быстрый лайк ❤️
       let clickTimeout = null;
       bubble.addEventListener('click', () => {
         if (clickTimeout) {
@@ -2339,7 +2410,7 @@
     }
   }
 
-  // 11. Меню действий над сообщением (Быстрые реакции + Ответить / Закрепить / Переслать / Изменить / Скопировать / Удалить)
+  // 11. Меню действий над сообщением
   function openMessageActionSheet(ctx) {
     selectedMsgContext = ctx;
     const isMine = ctx.msg.sender_id === currentUser.id;
@@ -2347,6 +2418,9 @@
 
     sheetEditBtn.classList.toggle('hidden', !isTextEditable);
     sheetCopyBtn.classList.toggle('hidden', !ctx.plainText);
+    if (sheetDownloadBtn) {
+      sheetDownloadBtn.classList.toggle('hidden', !ctx.msg.media_url);
+    }
 
     msgActionModal.classList.remove('hidden');
   }
@@ -2358,6 +2432,21 @@
   msgActionModal.addEventListener('click', (e) => {
     if (e.target === msgActionModal) msgActionModal.classList.add('hidden');
   });
+
+  if (sheetDownloadBtn) {
+    sheetDownloadBtn.addEventListener('click', () => {
+      if (!selectedMsgContext || !selectedMsgContext.msg.media_url) return;
+      const url = selectedMsgContext.msg.media_url;
+      msgActionModal.classList.add('hidden');
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+  }
 
   reactEmojiBtns.forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -2382,7 +2471,6 @@
     setReplyMessage(msg, senderName, plainText);
   });
 
-  // Закрепление сообщения в шапке диалога (синхронизируется для всех участников чата)
   if (sheetPinBtn) {
     sheetPinBtn.addEventListener('click', async () => {
       if (!selectedMsgContext || !activeRoom) return;
@@ -2402,7 +2490,6 @@
     });
   }
 
-  // Пересылка любого сообщения в другой чат
   if (sheetForwardBtn) {
     sheetForwardBtn.addEventListener('click', () => {
       if (!selectedMsgContext) return;
@@ -2516,7 +2603,6 @@
     await loadMessages(activeRoom.id);
   });
 
-  // Кастомный аудиоплеер голосовых с переключателем скорости 1x / 1.5x / 2x
   function buildCustomVoicePlayer(audioUrl, initialDuration) {
     const wrap = document.createElement('div');
     wrap.className = 'voice-player';
@@ -3083,12 +3169,264 @@
     updateSmartActionButtonUI();
   }
 
-  // 13. Realtime-подписка: мгновенные сообщения, уведомления и регистрация новых друзей
+  // 12.5. АУДИО- И ВИДЕОЗВОНКИ БЕЗ VPN (P2P WebRTC через Supabase Realtime)
+  let rtcPeerConnection = null;
+  let localCallStream = null;
+  let activeCallState = null; // { peerId, roomId, isVideo, incomingOffer, callStartTime, timerId }
+  let isCallMuted = false;
+
+  const RTC_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  };
+
+  function setupCallOverlayUI(peer, statusMsg, showAccept, isVideo) {
+    if (!callOverlay) return;
+    renderAvatarElement(callPeerAvatar, {
+      avatar_url: peer ? peer.avatar_url : '',
+      letter: peer ? peer.display_name : 'З',
+      color: peer ? peer.color : '#6366f1'
+    });
+    callPeerName.textContent = peer ? peer.display_name : 'Собеседник';
+    callStatusText.textContent = statusMsg;
+    callAcceptBtn.classList.toggle('hidden', !showAccept);
+    callVideoStage.classList.toggle('hidden', !isVideo);
+    callOverlay.classList.remove('hidden');
+  }
+
+  async function startOutgoingCall(isVideo) {
+    if (!activeRoom || !realtimeChannel) return;
+    const pres = getRoomPresentation(activeRoom);
+    if (!pres.peer) return;
+
+    try {
+      localCallStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: isVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
+      });
+
+      if (isVideo && callLocalVideo) {
+        callLocalVideo.srcObject = localCallStream;
+      }
+
+      activeCallState = {
+        peerId: pres.peer.id,
+        roomId: activeRoom.id,
+        isVideo,
+        incomingOffer: null,
+        callStartTime: 0,
+        timerId: null
+      };
+      isCallMuted = false;
+      callMuteBtn.style.opacity = '1';
+
+      setupCallOverlayUI(pres.peer, isVideo ? 'Видеовызов...' : 'Аудиовызов...', false, isVideo);
+
+      rtcPeerConnection = createRtcPeerConnection(pres.peer.id);
+      localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
+
+      const offer = await rtcPeerConnection.createOffer();
+      await rtcPeerConnection.setLocalDescription(offer);
+
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'call-signal',
+        payload: {
+          type: 'offer',
+          from_id: currentUser.id,
+          to_id: pres.peer.id,
+          room_id: activeRoom.id,
+          is_video: isVideo,
+          sdp: offer
+        }
+      });
+    } catch (err) {
+      alert('Для звонка разрешите доступ к микрофону/камере: ' + (err.message || err));
+      endActiveCall(false);
+    }
+  }
+
+  function createRtcPeerConnection(targetPeerId) {
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && realtimeChannel) {
+        realtimeChannel.send({
+          type: 'broadcast',
+          event: 'call-signal',
+          payload: {
+            type: 'ice',
+            from_id: currentUser.id,
+            to_id: targetPeerId,
+            candidate: event.candidate
+          }
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      if (callRemoteVideo && event.streams && event.streams[0]) {
+        callRemoteVideo.srcObject = event.streams[0];
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected' && activeCallState && !activeCallState.callStartTime) {
+        activeCallState.callStartTime = Date.now();
+        activeCallState.timerId = setInterval(() => {
+          if (!activeCallState) return;
+          const sec = Math.floor((Date.now() - activeCallState.callStartTime) / 1000);
+          callStatusText.textContent = `В разговоре • ${formatSec(sec)}`;
+        }, 1000);
+      } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        endActiveCall(false);
+      }
+    };
+
+    return pc;
+  }
+
+  async function handleIncomingCallSignal(payload) {
+    if (!payload || payload.to_id !== currentUser.id) return;
+    const caller = allProfiles.find((p) => p.id === payload.from_id);
+
+    if (payload.type === 'offer') {
+      if (activeCallState) return;
+      playNotificationSound();
+      if (navigator.vibrate) {
+        try { navigator.vibrate([300, 150, 300]); } catch (e) {}
+      }
+
+      activeCallState = {
+        peerId: payload.from_id,
+        roomId: payload.room_id,
+        isVideo: Boolean(payload.is_video),
+        incomingOffer: payload.sdp,
+        callStartTime: 0,
+        timerId: null
+      };
+
+      setupCallOverlayUI(
+        caller,
+        payload.is_video ? 'Входящий видеозвонок...' : 'Входящий аудиозвонок...',
+        true,
+        Boolean(payload.is_video)
+      );
+
+      sendSystemNotification(
+        caller ? caller.display_name : 'Входящий звонок',
+        payload.is_video ? '📹 Входящий видеозвонок в Pulse' : '📞 Входящий аудиозвонок в Pulse',
+        payload.room_id
+      );
+    } else if (payload.type === 'answer' && rtcPeerConnection) {
+      await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+      callStatusText.textContent = 'Соединение установлено';
+    } else if (payload.type === 'ice' && rtcPeerConnection && payload.candidate) {
+      try {
+        await rtcPeerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+      } catch (e) {}
+    } else if (payload.type === 'hangup') {
+      endActiveCall(false);
+    }
+  }
+
+  if (callAcceptBtn) {
+    callAcceptBtn.addEventListener('click', async () => {
+      if (!activeCallState || !activeCallState.incomingOffer) return;
+      try {
+        callAcceptBtn.classList.add('hidden');
+        callStatusText.textContent = 'Подключение...';
+
+        localCallStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: activeCallState.isVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
+        });
+
+        if (activeCallState.isVideo && callLocalVideo) {
+          callLocalVideo.srcObject = localCallStream;
+        }
+
+        rtcPeerConnection = createRtcPeerConnection(activeCallState.peerId);
+        localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
+
+        await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(activeCallState.incomingOffer));
+        const answer = await rtcPeerConnection.createAnswer();
+        await rtcPeerConnection.setLocalDescription(answer);
+
+        realtimeChannel.send({
+          type: 'broadcast',
+          event: 'call-signal',
+          payload: {
+            type: 'answer',
+            from_id: currentUser.id,
+            to_id: activeCallState.peerId,
+            sdp: answer
+          }
+        });
+      } catch (err) {
+        alert('Не удалось принять звонок: ' + (err.message || err));
+        endActiveCall(true);
+      }
+    });
+  }
+
+  function endActiveCall(notifyPeer = true) {
+    if (notifyPeer && activeCallState && realtimeChannel) {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'call-signal',
+        payload: {
+          type: 'hangup',
+          from_id: currentUser.id,
+          to_id: activeCallState.peerId
+        }
+      });
+    }
+    if (activeCallState && activeCallState.timerId) {
+      clearInterval(activeCallState.timerId);
+    }
+    activeCallState = null;
+    if (rtcPeerConnection) {
+      try { rtcPeerConnection.close(); } catch (e) {}
+      rtcPeerConnection = null;
+    }
+    if (localCallStream) {
+      localCallStream.getTracks().forEach((t) => t.stop());
+      localCallStream = null;
+    }
+    if (callRemoteVideo) callRemoteVideo.srcObject = null;
+    if (callLocalVideo) callLocalVideo.srcObject = null;
+    if (callOverlay) callOverlay.classList.add('hidden');
+  }
+
+  if (voiceCallBtn) {
+    voiceCallBtn.addEventListener('click', () => startOutgoingCall(false));
+  }
+  if (videoCallBtn) {
+    videoCallBtn.addEventListener('click', () => startOutgoingCall(true));
+  }
+  if (callHangupBtn) {
+    callHangupBtn.addEventListener('click', () => endActiveCall(true));
+  }
+  if (callMuteBtn) {
+    callMuteBtn.addEventListener('click', () => {
+      if (!localCallStream) return;
+      isCallMuted = !isCallMuted;
+      localCallStream.getAudioTracks().forEach((t) => {
+        t.enabled = !isCallMuted;
+      });
+      callMuteBtn.style.opacity = isCallMuted ? '0.45' : '1';
+    });
+  }
+
+  // 13. Realtime-подписка: мгновенные сообщения, звонки, уведомления и регистрация новых друзей
   function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
     realtimeChannel = supabaseClient
-      .channel('pulse-live-v11', {
+      .channel('pulse-live-v12', {
         config: { presence: { key: currentUser.id } }
       })
       .on('presence', { event: 'sync' }, () => {
@@ -3108,6 +3446,9 @@
           renderSidebarList();
           updateActiveRoomHeader();
         }, 3600);
+      })
+      .on('broadcast', { event: 'call-signal' }, ({ payload }) => {
+        handleIncomingCallSignal(payload);
       })
       .on(
         'postgres_changes',
@@ -3231,7 +3572,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=11').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=12').catch(() => {});
     });
   }
 

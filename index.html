@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=11" />
+  <link rel="stylesheet" href="./styles.css?v=12" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=11"></script>
+  <script src="./config.js?v=12"></script>
 </head>
 <body>
 
@@ -37,7 +37,7 @@
           </svg>
         </div>
         <h1>Pulse</h1>
-        <p>Защищённый мессенджер со сквозным шифрованием AES-256. Текст, фото, голосовые, видеокружочки и файлы.</p>
+        <p>Защищённый мессенджер со сквозным шифрованием AES-256. Текст, фото, голосовые, видеокружочки и звонки без VPN.</p>
       </div>
 
       <div class="segmented-control">
@@ -187,7 +187,7 @@
     </div>
   </div>
 
-  <!-- Всплывающее меню действий при нажатии на сообщение (Быстрые реакции + Ответить / Закрепить / Переслать / Изменить / Копировать / Удалить) -->
+  <!-- Всплывающее меню действий при нажатии на сообщение -->
   <div id="msgActionModal" class="modal-backdrop hidden">
     <div class="action-sheet-card">
       <div class="reaction-picker-bar">
@@ -218,6 +218,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         <span>Скопировать текст</span>
       </button>
+      <button id="sheetDownloadBtn" class="sheet-item hidden" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Скачать вложение</span>
+      </button>
       <button id="sheetDeleteBtn" class="sheet-item danger" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         <span>Удалить сообщение...</span>
@@ -246,6 +250,26 @@
       <button id="deleteForMeBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--accent);">Удалить только у меня</button>
       <button id="deleteForAllBtn" class="btn-danger hidden" type="button">Удалить у всех (с сервера)</button>
       <button id="cancelDeleteModalBtn" class="btn-ghost" type="button">Отмена</button>
+    </div>
+  </div>
+
+  <!-- Экран P2P аудио/видеозвонка без VPN (WebRTC) -->
+  <div id="callOverlay" class="call-overlay hidden">
+    <div id="callVideoStage" class="call-video-stage hidden">
+      <video id="callRemoteVideo" class="call-remote-video" autoplay playsinline></video>
+      <video id="callLocalVideo" class="call-local-video" autoplay muted playsinline></video>
+    </div>
+
+    <div class="call-header-info">
+      <div id="callPeerAvatar" class="avatar" style="width:86px; height:86px; font-size:32px; margin:0 auto 14px; box-shadow:0 12px 30px rgba(0,0,0,0.4);">А</div>
+      <h2 id="callPeerName" style="font-size:22px; font-weight:700;">Собеседник</h2>
+      <p id="callStatusText" style="font-size:14.5px; color:rgba(255,255,255,0.75); margin-top:6px;">Вызов...</p>
+    </div>
+
+    <div class="call-controls-bar">
+      <button id="callMuteBtn" class="call-btn" type="button" title="Вкл/Выкл микрофон">🎤</button>
+      <button id="callAcceptBtn" class="call-btn accept hidden" type="button" title="Ответить на звонок">📞</button>
+      <button id="callHangupBtn" class="call-btn hangup" type="button" title="Завершить звонок">📵</button>
     </div>
   </div>
 
@@ -296,7 +320,7 @@
     </div>
   </div>
 
-  <!-- Модальное окно: Просмотр карточки собеседника -->
+  <!-- Модальное окно: Информация о собеседнике/диалоге + Общие фото и вложения -->
   <div id="peerModal" class="modal-backdrop hidden">
     <div class="auth-card" style="text-align:center;">
       <div id="peerAvatar" class="avatar" style="width:72px; height:72px; font-size:26px; margin:0 auto 12px;">П</div>
@@ -304,6 +328,12 @@
       <p id="peerHandle" style="color:var(--accent); font-size:14px; font-weight:600; margin-top:4px;">@username</p>
       <p id="peerPhone" style="color:var(--text-muted); font-size:13px; margin-top:6px;"></p>
       <p id="peerBio" class="hidden" style="color:var(--text-main); font-size:13.5px; margin-top:10px; padding:10px; background:var(--bg-input); border-radius:10px;"></p>
+
+      <div id="sharedMediaSection" class="settings-section" style="text-align:left;">
+        <div class="settings-section-title">Вложения в этом чате (Фото и файлы)</div>
+        <div id="sharedMediaGrid" class="shared-media-grid"></div>
+      </div>
+
       <button id="closePeerModalBtn" class="btn-ghost" type="button" style="margin-top:16px;">Закрыть</button>
     </div>
   </div>
@@ -393,12 +423,12 @@
           </svg>
         </div>
         <h2>Выберите диалог</h2>
-        <p>Найдите друга по <strong>@username</strong> или <strong>номеру телефона</strong> в поиске слева. Все чаты защищены сквозным шифрованием <strong>AES-256</strong>.</p>
+        <p>Найдите друга по <strong>@username</strong> или <strong>номеру телефона</strong> в поиске слева. Все чаты и звонки защищены шифрованием <strong>AES-256</strong>.</p>
       </div>
 
       <div id="activeChatView" class="hidden" style="display:flex; flex-direction:column; height:100%; width:100%; position:relative;">
         <header class="chat-header">
-          <div id="chatHeaderTrigger" class="chat-header-info" title="Информация о чате">
+          <div id="chatHeaderTrigger" class="chat-header-info" title="Информация о чате и общие фото">
             <button id="mobileBackBtn" class="icon-btn mobile-back" type="button">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
@@ -415,6 +445,16 @@
           </div>
 
           <div class="chat-header-actions">
+            <button id="voiceCallBtn" class="icon-btn hidden" type="button" title="Аудиозвонок без VPN" style="width:34px; height:34px;">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+            </button>
+            <button id="videoCallBtn" class="icon-btn hidden" type="button" title="Видеозвонок без VPN" style="width:34px; height:34px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+              </svg>
+            </button>
             <button id="chatSearchToggleBtn" class="icon-btn" type="button" title="Поиск по сообщениям в чате" style="width:34px; height:34px;">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -496,6 +536,6 @@
     <img id="lightboxImg" src="" alt="Фото" />
   </div>
 
-  <script src="./app.js?v=11"></script>
+  <script src="./app.js?v=12"></script>
 </body>
 </html>
