@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pulse-pwa-v7';
+const CACHE_NAME = 'pulse-pwa-v8';
 const ASSETS = [
   './',
   './index.html',
@@ -34,5 +34,28 @@ self.addEventListener('fetch', (event) => {
         return res;
       })
       .catch(() => caches.match(event.request))
+  );
+});
+
+// Обработка нажатия на системное Push-уведомление
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetRoomId = event.notification.data && event.notification.data.roomId;
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.focus();
+          if (targetRoomId) {
+            client.postMessage({ type: 'OPEN_ROOM', roomId: targetRoomId });
+          }
+          return;
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow('./index.html');
+      }
+    })
   );
 });

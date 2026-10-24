@@ -15,6 +15,16 @@
 </head>
 <body>
 
+  <!-- Всплывающий баннер нового сообщения сверху (как в Telegram / iOS) -->
+  <div id="inAppToast" class="inapp-toast hidden">
+    <div id="toastAvatar" class="avatar" style="width:38px; height:38px; font-size:15px;">А</div>
+    <div class="toast-body">
+      <div id="toastTitle" class="toast-title">Новое сообщение</div>
+      <div id="toastText" class="toast-text">Текст сообщения...</div>
+    </div>
+    <button id="toastCloseBtn" class="toast-close" type="button">✕</button>
+  </div>
+
   <!-- Экран входа и строгой регистрации -->
   <div id="authScreen" class="overlay-screen">
     <div class="auth-card">
@@ -86,7 +96,7 @@
     </div>
   </div>
 
-  <!-- Единый раздел «Настройки» (Профиль, Оформление, Звук, Безопасность и Выход с подтверждением) -->
+  <!-- Единый раздел «Настройки» (Профиль, Оформление, Звук, Push-уведомления и Выход) -->
   <div id="profileModal" class="modal-backdrop hidden">
     <div class="auth-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
@@ -129,7 +139,7 @@
 
       <button id="saveProfileBtn" class="btn-primary" type="button">Сохранить профиль</button>
 
-      <!-- Секция Оформление и Звук -->
+      <!-- Секция Оформление, Звук и Push-уведомления -->
       <div class="settings-section">
         <div class="settings-section-title">Оформление и уведомления</div>
         <div class="theme-pills">
@@ -143,6 +153,14 @@
           <button id="soundToggleSwitch" class="toggle-switch on" type="button">
             <span class="toggle-knob"></span>
           </button>
+        </div>
+
+        <div class="settings-row" style="margin-top:8px;">
+          <div>
+            <div>Push-уведомления на телефон</div>
+            <div id="pushStatusSubtext" style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Оповещения о сообщениях и новых друзьях</div>
+          </div>
+          <button id="enablePushInSettingsBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Включить</button>
         </div>
       </div>
 
@@ -166,9 +184,17 @@
     </div>
   </div>
 
-  <!-- Всплывающее меню действий при нажатии на сообщение (Ответить / Изменить / Копировать / Удалить) -->
+  <!-- Всплывающее меню действий при нажатии на сообщение (Быстрые реакции + Ответить / Изменить / Копировать / Удалить) -->
   <div id="msgActionModal" class="modal-backdrop hidden">
     <div class="action-sheet-card">
+      <div class="reaction-picker-bar">
+        <button type="button" class="react-emoji-btn" data-react="❤️">❤️</button>
+        <button type="button" class="react-emoji-btn" data-react="👍">👍</button>
+        <button type="button" class="react-emoji-btn" data-react="🔥">🔥</button>
+        <button type="button" class="react-emoji-btn" data-react="😂">😂</button>
+        <button type="button" class="react-emoji-btn" data-react="😮">😮</button>
+        <button type="button" class="react-emoji-btn" data-react="😢">😢</button>
+      </div>
       <button id="sheetReplyBtn" class="sheet-item" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
         <span>Ответить</span>
@@ -302,6 +328,15 @@
             </svg>
           </button>
         </div>
+      </div>
+
+      <!-- Плашка быстрого включения Push-уведомлений на iPhone / ПК -->
+      <div id="pushPromptBanner" class="push-prompt-banner hidden">
+        <div class="push-prompt-text">
+          <strong>🔔 Включите уведомления</strong>
+          <span>Чтобы сразу видеть новые сообщения от друзей</span>
+        </div>
+        <button id="enablePushBannerBtn" class="push-prompt-btn" type="button">Включить</button>
       </div>
 
       <!-- Поиск по @username, номеру телефона или имени -->

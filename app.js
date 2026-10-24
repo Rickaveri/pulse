@@ -1,4 +1,4 @@
-// Pulse Messenger v5 — Умная клавиатура iOS, меню сообщений (Ответить / Изменить / Удалить у меня или у всех), пауза и смена камеры в кружочках, единые Настройки
+// Pulse Messenger v8 — Системные Push-уведомления и всплывающий баннер новых сообщений, мгновенное переключение диалогов без мелькания старого чата, счётчики непрочитанных, быстрые реакции
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -6,6 +6,17 @@
   const ICON_SEND = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="transform:translateX(1px);"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
   const ICON_MIC = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
   const ICON_VIDEO = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
+
+  // DOM: Всплывающий баннер уведомлений (In-App Toast) и Push-баннер
+  const inAppToast = document.getElementById('inAppToast');
+  const toastAvatar = document.getElementById('toastAvatar');
+  const toastTitle = document.getElementById('toastTitle');
+  const toastText = document.getElementById('toastText');
+  const toastCloseBtn = document.getElementById('toastCloseBtn');
+  const pushPromptBanner = document.getElementById('pushPromptBanner');
+  const enablePushBannerBtn = document.getElementById('enablePushBannerBtn');
+  const enablePushInSettingsBtn = document.getElementById('enablePushInSettingsBtn');
+  const pushStatusSubtext = document.getElementById('pushStatusSubtext');
 
   // DOM: Авторизация
   const authScreen = document.getElementById('authScreen');
@@ -56,6 +67,7 @@
 
   // DOM: Меню действий над сообщением и подтверждение удаления
   const msgActionModal = document.getElementById('msgActionModal');
+  const reactEmojiBtns = Array.from(document.querySelectorAll('[data-react]'));
   const sheetReplyBtn = document.getElementById('sheetReplyBtn');
   const sheetEditBtn = document.getElementById('sheetEditBtn');
   const sheetCopyBtn = document.getElementById('sheetCopyBtn');
@@ -150,6 +162,15 @@
   let activeRoom = null;
   let roomMessages = [];
 
+  // Мгновенный кэш сообщений по комнатам (чтобы при переключении с «Избранного» на Артёма не мелькал старый чат!)
+  const roomMessagesCache = new Map();
+  let currentSelectingRoomId = null;
+
+  // Счётчики непрочитанных сообщений по комнатам
+  const unreadCounts = new Map();
+  let toastTimeout = null;
+  let toastTargetRoomId = null;
+
   // Состояние ответа / редактирования / выбранного сообщения
   let replyToMsg = null;
   let editingMsg = null; // { id, created_at, quoteLine, plainText }
@@ -175,15 +196,16 @@
     localStorage.setItem('pulse_hidden_msgs', JSON.stringify(Array.from(set)));
   }
 
-  // Состояние записи (Голос / Видеокружочек)
+  // Состояние записи (Голос / Видеокружочек) + Кэшированный доступ к микрофону
   let recordMode = localStorage.getItem('pulse_rec_mode') === 'video' ? 'video' : 'voice';
-  let cameraFacingMode = 'user'; // 'user' (фронтальная) | 'environment' (основная)
+  let cameraFacingMode = 'user';
   let isRecording = false;
   let isRecordingLocked = false;
   let isRecordingPaused = false;
   let recordCanceled = false;
   let activeMediaRecorder = null;
   let activeMediaStream = null;
+  let cachedAudioStream = null;
   let recordedChunks = [];
   let elapsedRecordMs = 0;
   let lastResumeTime = 0;
@@ -252,6 +274,232 @@
   });
   syncViewportHeight();
 
+  // 0.5. PUSH-УВЕДОМЛЕНИЯ И ВСПЛЫВАЮЩИЙ БАННЕР НОВЫХ СООБЩЕНИЙ
+  function updatePushPermissionUI() {
+    const supported = 'Notification' in window;
+    if (!supported) {
+      if (pushPromptBanner) pushPromptBanner.classList.add('hidden');
+      if (enablePushInSettingsBtn) {
+        enablePushInSettingsBtn.textContent = 'Только на экране Домой';
+        enablePushInSettingsBtn.disabled = true;
+      }
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = 'Добавьте приложение «На экран Домой» в Safari (iOS 16.4+)';
+      }
+      return;
+    }
+
+    const perm = Notification.permission;
+    if (perm === 'granted') {
+      if (pushPromptBanner) pushPromptBanner.classList.add('hidden');
+      if (enablePushInSettingsBtn) {
+        enablePushInSettingsBtn.textContent = '✓ Включены';
+        enablePushInSettingsBtn.disabled = false;
+      }
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = 'Системные Push-уведомления активны на этом устройстве';
+      }
+    } else if (perm === 'denied') {
+      if (pushPromptBanner) pushPromptBanner.classList.add('hidden');
+      if (enablePushInSettingsBtn) {
+        enablePushInSettingsBtn.textContent = 'Заблокированы';
+      }
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = 'Разрешите уведомления для Pulse в настройках телефона';
+      }
+    } else {
+      // default — ещё не включены, показываем заметную плашку в списке диалогов
+      if (pushPromptBanner) pushPromptBanner.classList.remove('hidden');
+      if (enablePushInSettingsBtn) {
+        enablePushInSettingsBtn.textContent = 'Включить';
+        enablePushInSettingsBtn.disabled = false;
+      }
+    }
+  }
+
+  async function requestNotificationPermission() {
+    if (!('Notification' in window)) {
+      alert('Чтобы получать системные Push-уведомления на iPhone, откройте Pulse с иконки на экране «Домой» (iOS 16.4 и новее). Внутри приложения уведомления и баннеры уже работают!');
+      return;
+    }
+    try {
+      const result = await Notification.requestPermission();
+      updatePushPermissionUI();
+      if (result === 'granted') {
+        sendSystemNotification('Pulse — Уведомления включены 🔔', 'Теперь вы будете сразу получать оповещения о новых сообщениях.', null);
+      }
+    } catch (e) {
+      console.warn('Notification permission error:', e);
+    }
+  }
+
+  if (enablePushBannerBtn) {
+    enablePushBannerBtn.addEventListener('click', requestNotificationPermission);
+  }
+  if (enablePushInSettingsBtn) {
+    enablePushInSettingsBtn.addEventListener('click', requestNotificationPermission);
+  }
+
+  async function sendSystemNotification(title, body, roomId) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, {
+            body,
+            tag: roomId ? `pulse-room-${roomId}` : 'pulse-general',
+            renotify: true,
+            vibrate: [180, 80, 180],
+            data: { roomId: roomId || null }
+          });
+          return;
+        }
+      }
+      const n = new Notification(title, { body, tag: roomId || 'pulse' });
+      n.onclick = () => {
+        window.focus();
+        if (roomId) {
+          const target = myRooms.find((r) => r.id === roomId);
+          if (target) selectRoom(target);
+        }
+      };
+    } catch (e) {}
+  }
+
+  function showInAppToast({ title, text, peer, roomId }) {
+    if (!inAppToast) return;
+    toastTargetRoomId = roomId || null;
+    toastTitle.textContent = title || 'Новое сообщение';
+    toastText.textContent = text || 'Откройте диалог, чтобы прочитать';
+
+    if (peer) {
+      renderAvatarElement(toastAvatar, {
+        avatar_url: peer.avatar_url,
+        letter: peer.display_name,
+        color: peer.color
+      });
+    } else {
+      renderAvatarElement(toastAvatar, {
+        avatar_url: '',
+        letter: title || 'P',
+        color: '#6366f1'
+      });
+    }
+
+    inAppToast.classList.remove('hidden');
+    if (toastTimeout) clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => {
+      inAppToast.classList.add('hidden');
+    }, 5000);
+  }
+
+  if (inAppToast) {
+    inAppToast.addEventListener('click', (e) => {
+      if (e.target === toastCloseBtn) return;
+      inAppToast.classList.add('hidden');
+      if (toastTargetRoomId) {
+        const room = myRooms.find((r) => r.id === toastTargetRoomId);
+        if (room) selectRoom(room);
+      }
+    });
+  }
+
+  if (toastCloseBtn) {
+    toastCloseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      inAppToast.classList.add('hidden');
+    });
+  }
+
+  function updateAppIconBadge() {
+    let total = 0;
+    unreadCounts.forEach((cnt) => {
+      total += cnt;
+    });
+    if ('setAppBadge' in navigator) {
+      if (total > 0) {
+        navigator.setAppBadge(total).catch(() => {});
+      } else if ('clearAppBadge' in navigator) {
+        navigator.clearAppBadge().catch(() => {});
+      }
+    }
+    document.title = total > 0 ? `(${total}) Pulse — Защищённый мессенджер` : 'Pulse — Защищённый мессенджер';
+  }
+
+  async function handleIncomingMessageNotification(incoming) {
+    if (!currentUser || incoming.sender_id === currentUser.id) return;
+
+    let room = myRooms.find((r) => r.id === incoming.room_id);
+    if (!room) {
+      await refreshDirectoryAndRooms();
+      room = myRooms.find((r) => r.id === incoming.room_id);
+    }
+    if (!room || !isRoomVisibleToCurrentUser(room)) return;
+
+    const isChatCurrentlyVisible =
+      activeRoom &&
+      activeRoom.id === incoming.room_id &&
+      !document.hidden &&
+      (window.innerWidth > 820 || appShell.classList.contains('chat-active'));
+
+    playNotificationSound();
+    if (navigator.vibrate) {
+      try { navigator.vibrate([120, 60, 120]); } catch (e) {}
+    }
+
+    // Расшифровываем текст для красивого превью в уведомлении
+    let previewText = 'Новое сообщение';
+    if (incoming.media_type === 'voice') {
+      previewText = '🎤 Голосовое сообщение';
+    } else if (incoming.media_type === 'video_circle') {
+      previewText = '📹 Видеокружочек';
+    } else if (incoming.media_type === 'image') {
+      previewText = '📷 Фотография';
+    } else if (incoming.media_type === 'file') {
+      previewText = '📎 Файл';
+    } else if (incoming.content) {
+      const decrypted = await decryptTextForRoom(incoming.content, room);
+      const cleaned = decrypted
+        .replace(/^> [^\n]+\n/, '')
+        .replace(/\n\[edited\]$/, '')
+        .replace(/\n\[react:[^\]]+\]$/, '')
+        .trim();
+      previewText = cleaned || 'Новое сообщение';
+    }
+
+    const senderProfile = allProfiles.find((p) => p.id === incoming.sender_id);
+    const senderName = senderProfile ? senderProfile.display_name : getRoomPresentation(room).title;
+
+    if (!isChatCurrentlyVisible) {
+      const prevCount = unreadCounts.get(room.id) || 0;
+      unreadCounts.set(room.id, prevCount + 1);
+      updateAppIconBadge();
+      renderSidebarList();
+
+      // Показываем всплывающий баннер сверху внутри приложения
+      showInAppToast({
+        title: senderName,
+        text: previewText,
+        peer: senderProfile,
+        roomId: room.id
+      });
+
+      // И отправляем системное Push-уведомление на телефон / компьютер
+      sendSystemNotification(senderName, previewText, room.id);
+    }
+  }
+
+  // Слушаем клик по системному Push-уведомлению от Service Worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'OPEN_ROOM' && event.data.roomId) {
+        const room = myRooms.find((r) => r.id === event.data.roomId);
+        if (room) selectRoom(room);
+      }
+    });
+  }
+
   // 1. Управление темой: Авто (system), Тёмная (midnight) и Светлая (daylight)
   const systemLightQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
 
@@ -284,7 +532,7 @@
   });
   applyTheme(localStorage.getItem('pulse_theme') || 'system');
 
-  // 2. Звуковой сигнал при новом сообщении (внутри Настроек)
+  // 2. Звуковой сигнал при новом сообщении
   function updateSoundSwitchUI() {
     if (!soundToggleSwitch) return;
     soundToggleSwitch.classList.toggle('on', soundEnabled);
@@ -748,6 +996,7 @@
     onlineUserIds.add(currentUser.id);
     updateMyHeaderUI();
     updateSmartActionButtonUI();
+    updatePushPermissionUI();
 
     authScreen.classList.add('hidden');
     appShell.classList.remove('hidden');
@@ -765,6 +1014,16 @@
         .eq('id', currentUser.id);
     }, 45000);
   }
+
+  // При возвращении в приложение с телефона сразу обновляем сообщения и статус
+  document.addEventListener('visibilitychange', async () => {
+    if (!document.hidden && currentUser && supabaseClient) {
+      await refreshDirectoryAndRooms();
+      if (activeRoom) {
+        await loadMessages(activeRoom.id, { silent: true });
+      }
+    }
+  });
 
   async function ensureSavedMessagesRoom() {
     const savedKey = `saved_${currentUser.id}`;
@@ -809,6 +1068,7 @@
       color: currentUser.color
     });
     updateSoundSwitchUI();
+    updatePushPermissionUI();
     profileModal.classList.remove('hidden');
   }
 
@@ -852,15 +1112,7 @@
     const newBio = editBioInput.value.trim();
 
     if (!newName || newHandle.length < 3) {
-      alert('Укажите имя и @username (минимум 3 символа).');
-      return;
-    }
-
-    const duplicateHandle = allProfiles.find(
-      (p) => p.id !== currentUser.id && p.username.toLowerCase() === newHandle.toLowerCase()
-    );
-    if (duplicateHandle) {
-      alert(`Никнейм @${newHandle} уже занят.`);
+      alert('Укажите имя и корректный @username (минимум 3 символа).');
       return;
     }
 
@@ -868,10 +1120,11 @@
       color: currentUser.color,
       username: newHandle,
       phone: newPhone,
-      avatar_url: pendingAvatarUrl,
+      avatar_url: pendingAvatarUrl !== null ? pendingAvatarUrl : currentUser.avatar_url,
       bio: newBio
     });
 
+    saveProfileBtn.disabled = true;
     const { error } = await supabaseClient
       .from('profiles')
       .update({
@@ -880,17 +1133,18 @@
         last_seen: new Date().toISOString()
       })
       .eq('id', currentUser.id);
+    saveProfileBtn.disabled = false;
 
     if (error) {
-      alert('Ошибка сохранения профиля: ' + error.message);
+      alert('Ошибка сохранения: ' + error.message);
       return;
     }
 
     currentUser.display_name = newName;
     currentUser.username = newHandle;
     currentUser.phone = newPhone;
-    currentUser.avatar_url = pendingAvatarUrl;
     currentUser.bio = newBio;
+    if (pendingAvatarUrl !== null) currentUser.avatar_url = pendingAvatarUrl;
 
     updateMyHeaderUI();
     profileModal.classList.add('hidden');
@@ -899,6 +1153,7 @@
 
   // Подтверждение выхода из аккаунта
   requestLogoutBtn.addEventListener('click', () => {
+    profileModal.classList.add('hidden');
     logoutConfirmModal.classList.remove('hidden');
   });
 
@@ -908,274 +1163,313 @@
 
   confirmLogoutBtn.addEventListener('click', async () => {
     logoutConfirmModal.classList.add('hidden');
-    profileModal.classList.add('hidden');
-    await supabaseClient.auth.signOut();
-    activeRoom = null;
-    appShell.classList.add('hidden');
-    authScreen.classList.remove('hidden');
+    if (cachedAudioStream) {
+      cachedAudioStream.getTracks().forEach((t) => t.stop());
+      cachedAudioStream = null;
+    }
+    if (supabaseClient) await supabaseClient.auth.signOut();
+    window.location.reload();
   });
 
-  // 8. Загрузка контактов и приватных чатов
+  // 8. Закрытая видимость чатов и поиск по @username и номеру телефона
+  function isRoomVisibleToCurrentUser(room) {
+    if (!room || !currentUser) return false;
+    if (room.id === LEGACY_PUBLIC_ROOM_ID) return false;
+
+    const dk = room.direct_key || '';
+    if (dk.startsWith('saved_')) {
+      return dk === `saved_${currentUser.id}`;
+    }
+    if (!room.is_group && dk.includes('_')) {
+      const parts = dk.split('_');
+      return parts.includes(currentUser.id);
+    }
+    if (room.is_group) {
+      if (dk.startsWith('grp|')) {
+        const memberPart = dk.split('|')[1] || '';
+        const memberIds = memberPart.split(',').filter(Boolean);
+        return memberIds.includes(currentUser.id) || room.created_by === currentUser.id;
+      }
+      return room.created_by === currentUser.id;
+    }
+    return room.created_by === currentUser.id;
+  }
+
   async function refreshDirectoryAndRooms() {
-    const [{ data: profRows }, { data: roomRows }] = await Promise.all([
+    const [{ data: rawProfiles }, { data: rooms }] = await Promise.all([
       supabaseClient.from('profiles').select('*').order('display_name', { ascending: true }),
-      supabaseClient.from('rooms').select('*').order('created_at', { ascending: false })
+      supabaseClient.from('rooms').select('*').order('created_at', { ascending: true })
     ]);
 
-    allProfiles = (profRows || []).map(unpackProfile);
-
-    const rawRooms = (roomRows || []).filter((r) => r.id !== LEGACY_PUBLIC_ROOM_ID);
-    myRooms = rawRooms
-      .filter((r) => isUserMemberOfRoom(r, currentUser.id))
-      .map((r) => decorateRoomForUser(r));
+    allProfiles = (rawProfiles || []).map(unpackProfile).filter(Boolean);
+    myRooms = (rooms || []).filter(isRoomVisibleToCurrentUser);
 
     if (activeRoom) {
       const updatedActive = myRooms.find((r) => r.id === activeRoom.id);
       if (updatedActive) {
         activeRoom = updatedActive;
-        updateActiveRoomHeaderUI();
+        updateActiveRoomHeader();
       }
     }
 
     renderSidebarList();
   }
 
-  function isUserMemberOfRoom(room, userId) {
-    if (!room) return false;
-    if (room.created_by === userId) return true;
-    const key = room.direct_key || '';
-    if (!room.is_group && key.includes(userId)) return true;
-    if (room.is_group && key.includes('|')) {
-      const ids = (key.split('|')[1] || '').split(',');
-      return ids.includes(userId);
-    }
-    return false;
+  function getPeerForDirectRoom(room) {
+    if (!room || room.is_group) return null;
+    const dk = room.direct_key || '';
+    if (dk.startsWith('saved_')) return currentUser;
+    const parts = dk.split('_');
+    const peerId = parts.find((id) => id !== currentUser.id) || currentUser.id;
+    return allProfiles.find((p) => p.id === peerId) || null;
   }
 
-  function decorateRoomForUser(room) {
+  function getRoomPresentation(room) {
+    const dk = room.direct_key || '';
+    if (dk.startsWith('saved_')) {
+      return {
+        title: 'Избранное (Заметки)',
+        subtitle: 'Личное зашифрованное хранилище',
+        letter: '★',
+        color: '#6366f1',
+        avatar_url: '',
+        online: false,
+        peer: null,
+        isSaved: true
+      };
+    }
+
     if (!room.is_group) {
-      const key = room.direct_key || '';
-      if (key === `saved_${currentUser.id}`) {
+      const peer = getPeerForDirectRoom(room);
+      if (peer) {
+        const isTyping = isRoomTyping(room.id);
         return {
-          ...room,
-          displayTitle: 'Избранное (Заметки)',
-          displaySub: 'Личное зашифрованное хранилище',
-          avatarLetter: '★',
-          avatarColor: '#6366f1',
-          avatarUrl: '',
-          isOnline: false,
-          peerProfile: currentUser
-        };
-      }
-      const ids = key.split('_');
-      const partnerId = ids.find((id) => id !== currentUser.id) || currentUser.id;
-      const partner = allProfiles.find((p) => p.id === partnerId);
-      if (partner) {
-        const online = isPersonOnline(partner);
-        return {
-          ...room,
-          displayTitle: partner.display_name,
-          displaySub: formatPresenceStatus(partner),
-          avatarLetter: (partner.display_name || '?')[0].toUpperCase(),
-          avatarColor: partner.color,
-          avatarUrl: partner.avatar_url,
-          isOnline: online,
-          peerProfile: partner
+          title: peer.display_name,
+          subtitle: isTyping ? 'печатает...' : formatPresenceStatus(peer),
+          isTyping,
+          letter: peer.display_name[0] || '@',
+          color: peer.color || '#6366f1',
+          avatar_url: peer.avatar_url || '',
+          online: isPersonOnline(peer),
+          peer
         };
       }
     }
 
     let memberCountText = 'Закрытая группа';
-    if (room.direct_key && room.direct_key.includes('|')) {
-      const count = room.direct_key.split('|')[1].split(',').filter(Boolean).length;
-      memberCountText = `Закрытая группа • ${count} участн.`;
+    if (dk.startsWith('grp|')) {
+      const ids = (dk.split('|')[1] || '').split(',').filter(Boolean);
+      memberCountText = `Закрытая группа • ${ids.length} участн.`;
     }
+
+    const isTyping = isRoomTyping(room.id);
     return {
-      ...room,
-      displayTitle: room.name,
-      displaySub: memberCountText,
-      avatarLetter: (room.name || 'Г')[0].toUpperCase(),
-      avatarColor: '#4f46e5',
-      avatarUrl: '',
-      isOnline: false,
-      peerProfile: null
+      title: room.name || 'Группа',
+      subtitle: isTyping ? 'кто-то печатает...' : memberCountText,
+      isTyping,
+      letter: (room.name || 'Г')[0],
+      color: '#10b981',
+      avatar_url: '',
+      online: false,
+      peer: null
     };
   }
 
-  // 9. Поиск людей по @username, номеру телефона или имени
-  searchInput.addEventListener('input', () => {
-    const q = searchInput.value.trim();
-    searchClearBtn.classList.toggle('hidden', !q);
-    renderSidebarList();
-  });
-
-  searchClearBtn.addEventListener('click', () => {
-    searchInput.value = '';
-    searchClearBtn.classList.add('hidden');
-    renderSidebarList();
-  });
+  function isRoomTyping(roomId) {
+    const entry = typingByRoom.get(roomId);
+    if (!entry) return false;
+    if (Date.now() - entry.ts > 3500) {
+      typingByRoom.delete(roomId);
+      return false;
+    }
+    return true;
+  }
 
   function renderSidebarList() {
-    const rawQuery = searchInput.value.trim().toLowerCase();
-    const cleanQuery = rawQuery.replace(/^@+/, '');
-    const normalizedPhoneQuery = normalizePhone(rawQuery).replace(/\D/g, '');
+    const rawQuery = searchInput.value.trim();
+    searchClearBtn.classList.toggle('hidden', !rawQuery);
     chatList.innerHTML = '';
 
-    if (cleanQuery.length > 0) {
-      listSectionLabel.textContent = 'Поиск людей (@username / телефон)';
-      const matches = allProfiles.filter((p) => {
-        if (p.id === currentUser.id) return false;
-        const byUsername = p.username.toLowerCase().includes(cleanQuery);
-        const byName = p.display_name.toLowerCase().includes(cleanQuery);
-        const pDigits = (p.phone || '').replace(/\D/g, '');
-        const byPhone = normalizedPhoneQuery.length >= 3 && pDigits.includes(normalizedPhoneQuery);
-        return byUsername || byName || byPhone;
+    if (!rawQuery) {
+      listSectionLabel.textContent = 'Мои диалоги';
+
+      const sortedRooms = [...myRooms].sort((a, b) => {
+        const aSaved = (a.direct_key || '').startsWith('saved_') ? 1 : 0;
+        const bSaved = (b.direct_key || '').startsWith('saved_') ? 1 : 0;
+        return bSaved - aSaved;
       });
 
-      if (!matches.length) {
-        chatList.innerHTML = `<div class="empty-sidebar">Никого не найдено по запросу «${escapeHtml(rawQuery)}».<br/>Можно искать по <strong>@username</strong>, <strong>номеру телефона</strong> (+7...) или имени.</div>`;
-        return;
-      }
-
-      matches.forEach((person) => {
+      sortedRooms.forEach((room) => {
+        const pres = getRoomPresentation(room);
+        const unread = unreadCounts.get(room.id) || 0;
         const item = document.createElement('div');
-        item.className = 'chat-item';
-        const wrap = document.createElement('div');
-        wrap.className = 'avatar-wrap';
+        item.className = `chat-item ${activeRoom && activeRoom.id === room.id ? 'active' : ''}`;
+
+        const avatarWrap = document.createElement('div');
+        avatarWrap.className = 'avatar-wrap';
         const av = document.createElement('div');
         av.className = 'avatar';
         renderAvatarElement(av, {
-          avatar_url: person.avatar_url,
-          letter: person.display_name,
-          color: person.color
+          avatar_url: pres.avatar_url,
+          letter: pres.letter,
+          color: pres.color
         });
-        wrap.appendChild(av);
-        if (isPersonOnline(person)) {
+        avatarWrap.appendChild(av);
+
+        if (pres.online) {
           const dot = document.createElement('span');
           dot.className = 'online-dot';
-          wrap.appendChild(dot);
+          avatarWrap.appendChild(dot);
         }
 
         const body = document.createElement('div');
         body.className = 'chat-item-body';
-        const phoneBadge = person.phone ? ` • ${escapeHtml(person.phone)}` : '';
         body.innerHTML = `
           <div class="chat-item-top">
-            <div class="chat-item-title">${escapeHtml(person.display_name)}</div>
+            <span class="chat-item-name">${escapeHtml(pres.title)}</span>
           </div>
-          <div class="chat-item-sub" style="color:var(--accent);">@${escapeHtml(person.username)}${phoneBadge}</div>
+          <div class="chat-item-bottom">
+            <div class="chat-item-sub ${pres.isTyping ? 'typing' : ''}">${escapeHtml(pres.subtitle)}</div>
+            ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
+          </div>
         `;
 
-        item.appendChild(wrap);
+        item.appendChild(avatarWrap);
         item.appendChild(body);
-        item.addEventListener('click', () => {
-          searchInput.value = '';
-          searchClearBtn.classList.add('hidden');
-          openDirectChat(person);
-        });
+        item.addEventListener('click', () => selectRoom(room));
         chatList.appendChild(item);
       });
       return;
     }
 
-    listSectionLabel.textContent = 'Мои диалоги';
+    listSectionLabel.textContent = 'Результаты поиска';
+    const cleanQ = rawQuery.toLowerCase().replace(/^@+/, '');
+    const phoneQ = rawQuery.replace(/\D/g, '');
 
-    myRooms.forEach((room) => {
-      const isSelected = activeRoom && activeRoom.id === room.id;
+    const matchedPeople = allProfiles.filter((p) => {
+      if (p.id === currentUser.id) return false;
+      const matchHandle = p.username && p.username.toLowerCase().includes(cleanQ);
+      const matchName = p.display_name && p.display_name.toLowerCase().includes(cleanQ);
+      const pDigits = (p.phone || '').replace(/\D/g, '');
+      const matchPhone = phoneQ.length >= 3 && pDigits.includes(phoneQ);
+      return matchHandle || matchName || matchPhone;
+    });
+
+    if (matchedPeople.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.padding = '24px 14px';
+      empty.style.textAlign = 'center';
+      empty.style.color = 'var(--text-muted)';
+      empty.style.fontSize = '13px';
+      empty.textContent = 'Пользователь с таким @username или телефоном не найден.';
+      chatList.appendChild(empty);
+      return;
+    }
+
+    matchedPeople.forEach((person) => {
       const item = document.createElement('div');
-      item.className = `chat-item ${isSelected ? 'active' : ''}`;
+      item.className = 'chat-item';
 
-      const wrap = document.createElement('div');
-      wrap.className = 'avatar-wrap';
+      const avatarWrap = document.createElement('div');
+      avatarWrap.className = 'avatar-wrap';
       const av = document.createElement('div');
       av.className = 'avatar';
       renderAvatarElement(av, {
-        avatar_url: room.avatarUrl,
-        letter: room.avatarLetter,
-        color: room.avatarColor
+        avatar_url: person.avatar_url,
+        letter: person.display_name,
+        color: person.color
       });
-      wrap.appendChild(av);
-      if (room.isOnline) {
+      avatarWrap.appendChild(av);
+
+      if (isPersonOnline(person)) {
         const dot = document.createElement('span');
         dot.className = 'online-dot';
-        wrap.appendChild(dot);
+        avatarWrap.appendChild(dot);
       }
 
-      const typingInfo = typingByRoom.get(room.id);
-      const isTypingActive = typingInfo && typingInfo.expiresAt > Date.now();
-      const subText = isTypingActive
-        ? `${typingInfo.name}: ${typingInfo.action}`
-        : room.displaySub;
+      const subParts = [`@${person.username}`];
+      if (person.phone) subParts.push(person.phone);
 
       const body = document.createElement('div');
       body.className = 'chat-item-body';
       body.innerHTML = `
         <div class="chat-item-top">
-          <div class="chat-item-title">${escapeHtml(room.displayTitle)}</div>
+          <span class="chat-item-name">${escapeHtml(person.display_name)}</span>
         </div>
-        <div class="chat-item-sub ${isTypingActive ? 'typing-highlight' : ''}">${escapeHtml(subText)}</div>
+        <div class="chat-item-sub">${escapeHtml(subParts.join(' • '))}</div>
       `;
 
-      item.appendChild(wrap);
+      item.appendChild(avatarWrap);
       item.appendChild(body);
-      item.addEventListener('click', () => selectRoom(room));
+      item.addEventListener('click', async () => {
+        searchInput.value = '';
+        searchClearBtn.classList.add('hidden');
+        await openOrCreateDirectMessage(person);
+      });
       chatList.appendChild(item);
     });
   }
 
-  async function openDirectChat(person) {
-    const pairKey = [currentUser.id, person.id].sort().join('_');
+  searchInput.addEventListener('input', renderSidebarList);
+  searchClearBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    renderSidebarList();
+  });
 
-    let { data: existing } = await supabaseClient
-      .from('rooms')
-      .select('*')
-      .eq('direct_key', pairKey)
-      .maybeSingle();
+  async function openOrCreateDirectMessage(peer) {
+    const pairKey = [currentUser.id, peer.id].sort().join('_');
+    let room = myRooms.find((r) => r.direct_key === pairKey);
 
-    if (!existing) {
-      const { data: created, error } = await supabaseClient
+    if (!room) {
+      const { data: existingInDb } = await supabaseClient
         .from('rooms')
-        .insert({
-          name: `${currentUser.display_name} & ${person.display_name}`,
-          is_group: false,
-          direct_key: pairKey,
-          created_by: currentUser.id
-        })
-        .select()
-        .single();
+        .select('*')
+        .eq('direct_key', pairKey)
+        .maybeSingle();
 
-      if (error) {
-        alert('Не удалось открыть диалог: ' + error.message);
-        return;
+      if (existingInDb) {
+        room = existingInDb;
+      } else {
+        const { data: created, error } = await supabaseClient
+          .from('rooms')
+          .insert({
+            name: `${currentUser.display_name} & ${peer.display_name}`,
+            is_group: false,
+            direct_key: pairKey,
+            created_by: currentUser.id
+          })
+          .select()
+          .single();
+
+        if (error) {
+          alert('Не удалось открыть диалог: ' + error.message);
+          return;
+        }
+        room = created;
       }
-      existing = created;
+      await refreshDirectoryAndRooms();
     }
 
-    await refreshDirectoryAndRooms();
-    await selectRoom(decorateRoomForUser(existing));
+    await selectRoom(room);
   }
 
-  // 10. Создание закрытой группы
+  // 9. Создание закрытой группы
   newGroupBtn.addEventListener('click', () => {
     groupNameInput.value = '';
     groupMembersPicker.innerHTML = '';
 
     const others = allProfiles.filter((p) => p.id !== currentUser.id);
-    if (!others.length) {
-      groupMembersPicker.innerHTML = `<div style="padding:10px; font-size:13px; color:var(--text-muted);">Пока нет других зарегистрированных пользователей.</div>`;
+    if (others.length === 0) {
+      groupMembersPicker.innerHTML = `<div style="padding:12px; color:var(--text-muted); font-size:13px;">Пока нет других зарегистрированных пользователей.</div>`;
     } else {
       others.forEach((person) => {
-        const row = document.createElement('label');
-        row.className = 'member-option';
-        const phoneStr = person.phone ? ` • ${escapeHtml(person.phone)}` : '';
-        row.innerHTML = `
-          <input type="checkbox" value="${person.id}" />
-          <div style="min-width:0;">
-            <div style="font-weight:600; font-size:13.5px;">${escapeHtml(person.display_name)}</div>
-            <div style="font-size:11.5px; color:var(--text-muted);">@${escapeHtml(person.username)}${phoneStr}</div>
-          </div>
+        const label = document.createElement('label');
+        label.className = 'member-option';
+        label.innerHTML = `
+          <input type="checkbox" value="${escapeHtml(person.id)}" />
+          <span><strong>${escapeHtml(person.display_name)}</strong> <small style="color:var(--text-muted);">@${escapeHtml(person.username)}</small></span>
         `;
-        groupMembersPicker.appendChild(row);
+        groupMembersPicker.appendChild(label);
       });
     }
 
@@ -1185,28 +1479,30 @@
   closeGroupModalBtn.addEventListener('click', () => groupModal.classList.add('hidden'));
 
   createGroupConfirmBtn.addEventListener('click', async () => {
-    const title = groupNameInput.value.trim();
-    if (!title) {
-      alert('Укажите название группы.');
+    const name = groupNameInput.value.trim();
+    if (!name) {
+      alert('Введите название группы');
       return;
     }
 
     const checkedIds = Array.from(groupMembersPicker.querySelectorAll('input[type="checkbox"]:checked')).map(
       (cb) => cb.value
     );
-    const allMemberIds = Array.from(new Set([currentUser.id, ...checkedIds]));
-    const groupKey = `grp_${Date.now()}|${allMemberIds.join(',')}`;
+    const allMemberIds = Array.from(new Set([currentUser.id, ...checkedIds])).sort();
+    const groupKey = `grp|${allMemberIds.join(',')}|${Date.now()}`;
 
-    const { data: created, error } = await supabaseClient
+    createGroupConfirmBtn.disabled = true;
+    const { data: newRoom, error } = await supabaseClient
       .from('rooms')
       .insert({
-        name: title,
+        name,
         is_group: true,
         direct_key: groupKey,
         created_by: currentUser.id
       })
       .select()
       .single();
+    createGroupConfirmBtn.disabled = false;
 
     if (error) {
       alert('Ошибка создания группы: ' + error.message);
@@ -1215,53 +1511,95 @@
 
     groupModal.classList.add('hidden');
     await refreshDirectoryAndRooms();
-    await selectRoom(decorateRoomForUser(created));
+    if (newRoom) await selectRoom(newRoom);
   });
 
-  // 11. Выбор чата
+  // 10. Выбор комнаты и МГНОВЕННАЯ загрузка истории без мелькания старого диалога
   async function selectRoom(room) {
     activeRoom = room;
-    clearReplyOrEditBar();
+    currentSelectingRoomId = room.id;
+
+    // Сбрасываем счётчик непрочитанных для открытого диалога
+    if (unreadCounts.has(room.id)) {
+      unreadCounts.delete(room.id);
+      updateAppIconBadge();
+    }
+
+    clearComposerState();
+    updateActiveRoomHeader();
+
+    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: сразу очищаем контейнер сообщений ДО показа экрана чата,
+    // чтобы ни на секунду не мелькал предыдущий открытый диалог (например, «Избранное»)!
+    const cachedMsgs = roomMessagesCache.get(room.id);
+    if (cachedMsgs) {
+      roomMessages = cachedMsgs;
+      await renderMessages(room.id);
+    } else {
+      roomMessages = [];
+      messagesViewport.innerHTML = '';
+    }
 
     emptyChatState.classList.add('hidden');
     activeChatView.classList.remove('hidden');
     appShell.classList.add('chat-active');
-
-    updateActiveRoomHeaderUI();
-    updateE2eBadgeUI();
-    updateSmartActionButtonUI();
     renderSidebarList();
     syncViewportHeight();
-    await loadMessages(room.id);
+
+    await loadMessages(room.id, { silent: Boolean(cachedMsgs) });
+    await markRoomMessagesAsRead(room.id);
   }
 
-  function updateActiveRoomHeaderUI() {
+  function updateActiveRoomHeader() {
     if (!activeRoom) return;
-    activeRoomTitle.textContent = activeRoom.displayTitle;
+    const pres = getRoomPresentation(activeRoom);
+    activeRoomTitle.textContent = pres.title;
+    activeRoomStatus.textContent = pres.subtitle;
+    activeRoomStatus.classList.toggle('typing', Boolean(pres.isTyping));
     renderAvatarElement(activeRoomAvatar, {
-      avatar_url: activeRoom.avatarUrl,
-      letter: activeRoom.avatarLetter,
-      color: activeRoom.avatarColor
+      avatar_url: pres.avatar_url,
+      letter: pres.letter,
+      color: pres.color
     });
-    activeRoomOnlineDot.classList.toggle('hidden', !activeRoom.isOnline);
+    activeRoomOnlineDot.classList.toggle('hidden', !pres.online);
 
-    const typingInfo = typingByRoom.get(activeRoom.id);
-    if (typingInfo && typingInfo.expiresAt > Date.now()) {
-      activeRoomStatus.textContent = activeRoom.is_group
-        ? `${typingInfo.name}: ${typingInfo.action}`
-        : typingInfo.action;
-      activeRoomStatus.className = 'header-status typing';
-    } else {
-      activeRoomStatus.textContent = activeRoom.displaySub;
-      activeRoomStatus.className = `header-status ${activeRoom.isOnline ? 'online' : ''}`;
-    }
+    const hasCustomSecret = Boolean(getRoomCustomSecret(activeRoom.id));
+    e2eBadgeText.textContent = hasCustomSecret ? 'AES-256 + Ключ' : 'AES-256';
   }
 
-  function updateE2eBadgeUI() {
+  mobileBackBtn.addEventListener('click', () => {
+    messageInput.blur();
+    appShell.classList.remove('chat-active');
+    activeRoom = null;
+    currentSelectingRoomId = null;
+    messagesViewport.innerHTML = '';
+    renderSidebarList();
+    syncViewportHeight();
+  });
+
+  chatHeaderTrigger.addEventListener('click', (e) => {
+    if (e.target.closest('#mobileBackBtn')) return;
     if (!activeRoom) return;
-    const customSecret = getRoomCustomSecret(activeRoom.id);
-    e2eBadgeText.textContent = customSecret ? 'AES-256 + Ключ' : 'AES-256';
-  }
+    const pres = getRoomPresentation(activeRoom);
+    if (!pres.peer) return;
+
+    renderAvatarElement(peerAvatar, {
+      avatar_url: pres.peer.avatar_url,
+      letter: pres.peer.display_name,
+      color: pres.peer.color
+    });
+    peerName.textContent = pres.peer.display_name;
+    peerHandle.textContent = `@${pres.peer.username}`;
+    peerPhone.textContent = pres.peer.phone ? `Телефон: ${pres.peer.phone}` : 'Номер телефона скрыт';
+    if (pres.peer.bio) {
+      peerBio.textContent = pres.peer.bio;
+      peerBio.classList.remove('hidden');
+    } else {
+      peerBio.classList.add('hidden');
+    }
+    peerModal.classList.remove('hidden');
+  });
+
+  closePeerModalBtn.addEventListener('click', () => peerModal.classList.add('hidden'));
 
   e2eBadgeBtn.addEventListener('click', () => {
     if (!activeRoom) return;
@@ -1274,232 +1612,286 @@
   saveE2eKeyBtn.addEventListener('click', async () => {
     if (!activeRoom) return;
     setRoomCustomSecret(activeRoom.id, chatSecretKeyInput.value.trim());
-    updateE2eBadgeUI();
+    updateActiveRoomHeader();
     e2eModal.classList.add('hidden');
-    await renderMessages();
+    await renderMessages(activeRoom.id);
   });
 
-  chatHeaderTrigger.addEventListener('click', (e) => {
-    if (e.target.closest('#mobileBackBtn')) return;
-    if (!activeRoom) return;
-
-    if (activeRoom.direct_key === `saved_${currentUser.id}`) {
-      renderAvatarElement(peerAvatar, {
-        avatar_url: '',
-        letter: '★',
-        color: '#6366f1'
-      });
-      peerName.textContent = 'Избранное (Заметки)';
-      peerHandle.textContent = 'Личное хранилище AES-256';
-      peerPhone.textContent = '';
-      peerBio.textContent = 'Здесь можно сохранять для себя важные заметки, фотографии, видеокружочки и файлы. Доступ к этому чату есть только у вас.';
-      peerBio.classList.remove('hidden');
-      peerModal.classList.remove('hidden');
-      return;
-    }
-
-    if (!activeRoom.peerProfile) return;
-    const p = activeRoom.peerProfile;
-    renderAvatarElement(peerAvatar, {
-      avatar_url: p.avatar_url,
-      letter: p.display_name,
-      color: p.color
-    });
-    peerName.textContent = p.display_name;
-    peerHandle.textContent = `@${p.username} • ${formatPresenceStatus(p)}`;
-    peerPhone.textContent = p.phone ? `Телефон: ${p.phone}` : '';
-    if (p.bio && p.bio.trim()) {
-      peerBio.textContent = p.bio.trim();
-      peerBio.classList.remove('hidden');
-    } else {
-      peerBio.textContent = '';
-      peerBio.classList.add('hidden');
-    }
-    peerModal.classList.remove('hidden');
-  });
-
-  closePeerModalBtn.addEventListener('click', () => peerModal.classList.add('hidden'));
-
-  mobileBackBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    appShell.classList.remove('chat-active');
-    syncViewportHeight();
-  });
-
-  // 12. Отрисовка сообщений и аккуратное меню при нажатии на сообщение
-  async function loadMessages(roomId) {
+  async function loadMessages(roomId, opts = {}) {
     const { data, error } = await supabaseClient
       .from('messages')
       .select('*')
       .eq('room_id', roomId)
       .order('created_at', { ascending: true })
-      .limit(200);
+      .limit(250);
 
-    if (!error && data) {
-      roomMessages = data;
-      await renderMessages();
-    }
+    if (error) return;
+    const fetched = data || [];
+    roomMessagesCache.set(roomId, fetched);
+
+    // Если пользователь уже переключился в другой чат, не перезаписываем экран
+    if (!activeRoom || activeRoom.id !== roomId || currentSelectingRoomId !== roomId) return;
+
+    roomMessages = fetched;
+    await renderMessages(roomId);
   }
 
-  async function renderMessages() {
+  async function markRoomMessagesAsRead(roomId) {
+    if (!currentUser || !activeRoom || activeRoom.id !== roomId) return;
+    const unreadIncoming = roomMessages.filter(
+      (m) => m.sender_id !== currentUser.id && !m.is_read
+    );
+    if (unreadIncoming.length === 0) return;
+
+    const ids = unreadIncoming.map((m) => m.id);
+    await supabaseClient.from('messages').update({ is_read: true }).in('id', ids);
+  }
+
+  function formatDateSeparator(dateStr) {
+    const d = new Date(dateStr);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    if (d.toDateString() === today.toDateString()) return 'Сегодня';
+    if (d.toDateString() === yesterday.toDateString()) return 'Вчера';
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  }
+
+  async function renderMessages(targetRoomId) {
     if (!activeRoom) return;
-    messagesViewport.innerHTML = '';
+    const roomSnapshot = activeRoom;
+    if (targetRoomId && roomSnapshot.id !== targetRoomId) return;
 
     const hiddenIds = getLocallyHiddenMsgIds();
     const visibleMessages = roomMessages.filter((m) => !hiddenIds.has(m.id));
 
-    if (!visibleMessages.length) {
-      messagesViewport.innerHTML = `<div class="date-divider">🔒 Сообщения в этом чате защищены сквозным шифрованием AES-256</div>`;
+    const decryptedList = await Promise.all(
+      visibleMessages.map(async (msg) => {
+        const plain = msg.content ? await decryptTextForRoom(msg.content, roomSnapshot) : '';
+        return { msg, plain };
+      })
+    );
+
+    // Проверяем, что пока шла расшифровка, пользователь не переключился на другой чат
+    if (!activeRoom || activeRoom.id !== roomSnapshot.id) return;
+
+    messagesViewport.innerHTML = '';
+
+    if (decryptedList.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.margin = 'auto';
+      empty.style.textAlign = 'center';
+      empty.style.color = 'var(--text-muted)';
+      empty.style.fontSize = '13px';
+      empty.textContent = 'Сообщений пока нет. Напишите первым!';
+      messagesViewport.appendChild(empty);
       return;
     }
 
-    for (const msg of visibleMessages) {
-      const isOwn = msg.sender_id === currentUser.id;
+    let lastDateKey = '';
+
+    decryptedList.forEach(({ msg, plain }) => {
+      const dKey = new Date(msg.created_at).toDateString();
+      if (dKey !== lastDateKey) {
+        lastDateKey = dKey;
+        const sep = document.createElement('div');
+        sep.className = 'date-separator';
+        sep.innerHTML = `<span>${escapeHtml(formatDateSeparator(msg.created_at))}</span>`;
+        messagesViewport.appendChild(sep);
+      }
+
+      const isMine = msg.sender_id === currentUser.id;
+      const sender = allProfiles.find((p) => p.id === msg.sender_id);
+      const senderName = sender ? sender.display_name : 'Пользователь';
+
       const row = document.createElement('div');
-      row.className = `msg-row ${isOwn ? 'own' : 'other'}`;
+      row.className = `msg-row ${isMine ? 'mine' : 'theirs'}`;
+
+      if (roomSnapshot.is_group && !isMine) {
+        const authorEl = document.createElement('div');
+        authorEl.className = 'msg-author';
+        authorEl.textContent = senderName;
+        row.appendChild(authorEl);
+      }
+
+      const bubble = document.createElement('div');
+      const isCircle = msg.media_type === 'video_circle';
+      bubble.className = `msg-bubble ${isCircle ? 'circle-bubble' : ''}`;
+
+      // Разбор цитаты ответа, метки редактирования [edited] и реакций [react:...]
+      let textBody = plain || '';
+      let quoteLine = '';
+      let isEdited = false;
+      let reactionEmoji = '';
+
+      const reactMatch = textBody.match(/\n\[react:([^\]]+)\]$/);
+      if (reactMatch) {
+        reactionEmoji = reactMatch[1];
+        textBody = textBody.slice(0, -reactMatch[0].length);
+      }
+
+      if (textBody.endsWith('\n[edited]')) {
+        isEdited = true;
+        textBody = textBody.slice(0, -9);
+      } else if (textBody === '[edited]') {
+        isEdited = true;
+        textBody = '';
+      }
+
+      if (textBody.startsWith('> ')) {
+        const nlIdx = textBody.indexOf('\n');
+        if (nlIdx !== -1) {
+          quoteLine = textBody.slice(2, nlIdx).trim();
+          textBody = textBody.slice(nlIdx + 1);
+        }
+      }
+
+      if (quoteLine && !isCircle) {
+        const qBox = document.createElement('div');
+        qBox.className = 'msg-reply-quote';
+        qBox.textContent = quoteLine;
+        bubble.appendChild(qBox);
+      }
+
+      if (msg.media_url) {
+        if (msg.media_type === 'image') {
+          const img = document.createElement('img');
+          img.className = 'msg-image';
+          img.src = msg.media_url;
+          img.alt = 'Фото';
+          img.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            lightboxImg.src = msg.media_url;
+            lightbox.classList.remove('hidden');
+          });
+          bubble.appendChild(img);
+        } else if (msg.media_type === 'video_circle') {
+          const circleWrap = document.createElement('div');
+          circleWrap.className = 'video-circle-msg';
+          const vid = document.createElement('video');
+          vid.src = msg.media_url;
+          vid.playsInline = true;
+          vid.loop = true;
+          vid.muted = false;
+          vid.preload = 'metadata';
+
+          const badge = document.createElement('div');
+          badge.className = 'circle-play-badge';
+          badge.textContent = '▶ Кружочек';
+
+          circleWrap.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (vid.paused) {
+              vid.play();
+              badge.textContent = '⏸ Пауза';
+            } else {
+              vid.pause();
+              badge.textContent = '▶ Кружочек';
+            }
+          });
+
+          circleWrap.appendChild(vid);
+          circleWrap.appendChild(badge);
+          bubble.appendChild(circleWrap);
+        } else if (msg.media_type === 'voice') {
+          const voiceCard = buildCustomVoicePlayer(msg.media_url);
+          bubble.appendChild(voiceCard);
+        } else {
+          const fileName = textBody || 'Скачать файл';
+          const fileLink = document.createElement('a');
+          fileLink.className = 'file-attachment';
+          fileLink.href = msg.media_url;
+          fileLink.target = '_blank';
+          fileLink.rel = 'noopener noreferrer';
+          fileLink.addEventListener('click', (ev) => ev.stopPropagation());
+          fileLink.innerHTML = `
+            <div class="file-icon">📎</div>
+            <div class="file-info">
+              <div class="file-name">${escapeHtml(fileName)}</div>
+              <div class="file-sub">Нажмите, чтобы открыть файл</div>
+            </div>
+          `;
+          bubble.appendChild(fileLink);
+        }
+      }
+
+      if (textBody && msg.media_type !== 'file') {
+        const txt = document.createElement('div');
+        txt.textContent = textBody;
+        bubble.appendChild(txt);
+      }
 
       const timeStr = new Date(msg.created_at).toLocaleTimeString('ru-RU', {
         hour: '2-digit',
         minute: '2-digit'
       });
 
-      const showAuthor = activeRoom.is_group && !isOwn;
-      let decryptedText = await decryptTextForRoom(msg.content || '', activeRoom);
+      const meta = document.createElement('div');
+      meta.className = 'msg-meta';
 
-      // Проверка пометки редактирования [edit]
-      let isEdited = false;
-      if (decryptedText.startsWith('[edit]')) {
-        isEdited = true;
-        decryptedText = decryptedText.slice(6);
+      if (reactionEmoji) {
+        const reactPill = document.createElement('span');
+        reactPill.style.background = 'rgba(255,255,255,0.16)';
+        reactPill.style.padding = '1px 6px';
+        reactPill.style.borderRadius = '999px';
+        reactPill.style.fontSize = '12px';
+        reactPill.textContent = reactionEmoji;
+        meta.appendChild(reactPill);
       }
 
-      let replyBlockHtml = '';
-      let quoteLine = '';
-      let mainText = decryptedText;
-      if (decryptedText.startsWith('>>')) {
-        const newlineIdx = decryptedText.indexOf('\n');
-        if (newlineIdx !== -1) {
-          quoteLine = decryptedText.slice(2, newlineIdx);
-          mainText = decryptedText.slice(newlineIdx + 1);
-          replyBlockHtml = `<div class="msg-reply-quote">${escapeHtml(quoteLine)}</div>`;
-        }
+      if (isEdited) {
+        const edSpan = document.createElement('span');
+        edSpan.className = 'edited-label';
+        edSpan.textContent = 'изменено';
+        meta.appendChild(edSpan);
       }
 
-      const rawUrl = msg.media_url || '';
-      const isVideoCircle = rawUrl.includes('#circle');
-      const isRearCircle = rawUrl.includes('#circle-rear');
-      const isFileAttachment = rawUrl.includes('#file:');
+      const timeSpan = document.createElement('span');
+      timeSpan.textContent = timeStr;
+      meta.appendChild(timeSpan);
 
-      let contentBlock = replyBlockHtml;
-
-      if (isVideoCircle) {
-        const cleanVideoUrl = rawUrl.split('#')[0];
-        contentBlock += `
-          <div class="video-note-wrap">
-            <video class="${isRearCircle ? '' : 'mirrored'}" src="${escapeHtml(cleanVideoUrl)}#t=0.001" playsinline loop preload="metadata"></video>
-            <div class="video-note-badge">▶ Кружочек</div>
-          </div>
-        `;
-      } else if (isFileAttachment) {
-        const [cleanFileUrl, hashPart] = rawUrl.split('#file:');
-        const metaParts = (hashPart || '').split(':');
-        const fileName = decodeURIComponent(metaParts[0] || 'Документ');
-        const fileSize = decodeURIComponent(metaParts[1] || '');
-        contentBlock += `
-          <a class="file-card" href="${escapeHtml(cleanFileUrl)}" target="_blank" rel="noopener" download="${escapeHtml(fileName)}">
-            <div class="file-icon-box">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
-              </svg>
-            </div>
-            <div class="file-meta">
-              <div class="file-name">${escapeHtml(fileName)}</div>
-              <div class="file-sub">${escapeHtml(fileSize || 'Скачать файл')}</div>
-            </div>
-          </a>
-        `;
-      } else if (msg.media_type === 'image' && rawUrl) {
-        contentBlock += `<img class="msg-photo" src="${escapeHtml(rawUrl)}" alt="Фото" />`;
-      } else if (msg.media_type === 'audio' && rawUrl) {
-        contentBlock += buildVoicePlayerHtml();
+      if (isMine) {
+        const ticks = document.createElement('span');
+        ticks.className = 'read-ticks';
+        ticks.textContent = msg.is_read ? '✓✓' : '✓';
+        meta.appendChild(ticks);
       }
 
-      if (mainText && msg.media_type !== 'audio' && !isVideoCircle) {
-        contentBlock += `<div>${escapeHtml(mainText)}</div>`;
+      if (isCircle) {
+        row.appendChild(bubble);
+        row.appendChild(meta);
+      } else {
+        bubble.appendChild(meta);
+        row.appendChild(bubble);
       }
 
-      row.innerHTML = `
-        ${showAuthor ? `<div class="msg-author" style="color:var(--accent)">${escapeHtml(msg.sender_name)}</div>` : ''}
-        <div class="msg-bubble ${isVideoCircle ? 'circle-bubble' : ''}">
-          ${contentBlock}
-          <div class="msg-meta">
-            ${isEdited ? '<span>изм.</span>' : ''}
-            <span>${timeStr}</span>
-            ${isOwn ? '<span>✓✓</span>' : ''}
-          </div>
-        </div>
-      `;
-
-      const bubbleEl = row.querySelector('.msg-bubble');
-
-      const img = row.querySelector('.msg-photo');
-      if (img) {
-        img.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          lightboxImg.src = rawUrl;
-          lightbox.classList.remove('hidden');
-        });
-      }
-
-      const circleEl = row.querySelector('.video-note-wrap');
-      if (circleEl) {
-        const vid = circleEl.querySelector('video');
-        const badge = circleEl.querySelector('.video-note-badge');
-        circleEl.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          if (vid.paused) {
-            vid.muted = false;
-            vid.play();
-            if (badge) badge.textContent = '⏸ Пауза';
-          } else {
-            vid.pause();
-            if (badge) badge.textContent = '▶ Кружочек';
-          }
-        });
-      }
-
-      const voiceWrap = row.querySelector('.voice-player');
-      if (voiceWrap) {
-        bindVoicePlayer(voiceWrap, rawUrl);
-      }
-
-      // Нажатие на пузырёк сообщения открывает чистое меню действий (как в Telegram)
-      bubbleEl.addEventListener('click', (ev) => {
-        if (ev.target.closest('.voice-play-btn') || ev.target.closest('.file-card')) return;
+      bubble.addEventListener('click', () => {
         openMessageActionSheet({
           msg,
-          plainText: mainText,
+          senderName,
+          plainText: textBody,
           quoteLine,
           isEdited,
-          isVideoCircle,
-          isFileAttachment
+          reactionEmoji
         });
       });
 
       messagesViewport.appendChild(row);
-    }
+    });
 
     messagesViewport.scrollTop = messagesViewport.scrollHeight;
   }
 
-  // Меню действий над сообщением (Ответить / Изменить / Скопировать / Удалить)
+  // 11. Меню действий над сообщением (Быстрые реакции + Ответить / Изменить / Скопировать / Удалить)
   function openMessageActionSheet(ctx) {
     selectedMsgContext = ctx;
-    const isOwn = ctx.msg.sender_id === currentUser.id;
-    const isPlainTextMsg = ctx.msg.media_type === 'text' && !ctx.msg.media_url;
+    const isMine = ctx.msg.sender_id === currentUser.id;
+    const isTextEditable = isMine && (!ctx.msg.media_type || ctx.msg.media_type === 'text');
 
-    sheetEditBtn.classList.toggle('hidden', !(isOwn && isPlainTextMsg));
+    sheetEditBtn.classList.toggle('hidden', !isTextEditable);
     sheetCopyBtn.classList.toggle('hidden', !ctx.plainText);
+
     msgActionModal.classList.remove('hidden');
   }
 
@@ -1511,61 +1903,80 @@
     if (e.target === msgActionModal) msgActionModal.classList.add('hidden');
   });
 
-  sheetReplyBtn.addEventListener('click', () => {
-    if (!selectedMsgContext) return;
-    const { msg, plainText, isVideoCircle, isFileAttachment } = selectedMsgContext;
-    msgActionModal.classList.add('hidden');
-    editingMsg = null;
-    replyToMsg = {
-      author: msg.sender_name,
-      text:
-        plainText ||
-        (isVideoCircle
-          ? '[Видеокружочек]'
-          : isFileAttachment
-          ? '[Файл]'
-          : msg.media_type === 'image'
-          ? '[Фотография]'
-          : '[Голосовое сообщение]')
-    };
-    replyTargetAuthor.textContent = `Ответ для ${replyToMsg.author}`;
-    replyTargetText.textContent = replyToMsg.text;
-    replyPreviewBar.classList.remove('hidden');
-    messageInput.focus();
+  // Обработка нажатия на эмодзи-реакцию
+  reactEmojiBtns.forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!selectedMsgContext || !activeRoom) return;
+      const emoji = btn.dataset.react;
+      const ctx = selectedMsgContext;
+      msgActionModal.classList.add('hidden');
+
+      let updatedPlain = '';
+      if (ctx.quoteLine) {
+        updatedPlain += `> ${ctx.quoteLine}\n`;
+      }
+      updatedPlain += ctx.plainText || '';
+      if (ctx.isEdited) {
+        updatedPlain += '\n[edited]';
+      }
+      if (ctx.reactionEmoji !== emoji) {
+        updatedPlain += `\n[react:${emoji}]`;
+      }
+
+      const encrypted = await encryptTextForRoom(updatedPlain, activeRoom);
+      await supabaseClient
+        .from('messages')
+        .update({ content: encrypted })
+        .eq('id', ctx.msg.id);
+
+      await loadMessages(activeRoom.id, { silent: true });
+    });
   });
 
-  sheetEditBtn.addEventListener('click', () => {
+  sheetReplyBtn.addEventListener('click', () => {
     if (!selectedMsgContext) return;
-    const { msg, plainText, quoteLine } = selectedMsgContext;
+    const { msg, senderName, plainText } = selectedMsgContext;
     msgActionModal.classList.add('hidden');
-    replyToMsg = null;
-    editingMsg = {
-      id: msg.id,
-      created_at: msg.created_at,
-      quoteLine: quoteLine || '',
-      plainText: plainText || ''
-    };
-    replyTargetAuthor.textContent = '✏️ Редактирование сообщения';
-    replyTargetText.textContent = editingMsg.plainText;
-    replyPreviewBar.classList.remove('hidden');
-    messageInput.value = editingMsg.plainText;
-    updateSmartActionButtonUI();
-    messageInput.focus();
+    setReplyMessage(msg, senderName, plainText);
   });
 
   sheetCopyBtn.addEventListener('click', async () => {
     if (!selectedMsgContext || !selectedMsgContext.plainText) return;
-    msgActionModal.classList.add('hidden');
     try {
       await navigator.clipboard.writeText(selectedMsgContext.plainText);
     } catch (e) {}
+    msgActionModal.classList.add('hidden');
+  });
+
+  sheetEditBtn.addEventListener('click', () => {
+    if (!selectedMsgContext) return;
+    const { msg, plainText, quoteLine, reactionEmoji } = selectedMsgContext;
+    msgActionModal.classList.add('hidden');
+
+    replyToMsg = null;
+    editingMsg = {
+      id: msg.id,
+      created_at: msg.created_at,
+      room_id: msg.room_id,
+      quoteLine: quoteLine || '',
+      reactionEmoji: reactionEmoji || '',
+      plainText: plainText || ''
+    };
+
+    replyTargetAuthor.textContent = '✏️ Редактирование сообщения';
+    replyTargetText.textContent = plainText || '';
+    replyPreviewBar.classList.remove('hidden');
+
+    messageInput.value = plainText || '';
+    updateSmartActionButtonUI();
+    messageInput.focus();
   });
 
   sheetDeleteBtn.addEventListener('click', () => {
     if (!selectedMsgContext) return;
     msgActionModal.classList.add('hidden');
-    const isOwn = selectedMsgContext.msg.sender_id === currentUser.id;
-    deleteForAllBtn.classList.toggle('hidden', !isOwn);
+    const isMine = selectedMsgContext.msg.sender_id === currentUser.id;
+    deleteForAllBtn.classList.toggle('hidden', !isMine);
     deleteConfirmModal.classList.remove('hidden');
   });
 
@@ -1573,147 +1984,239 @@
     deleteConfirmModal.classList.add('hidden');
   });
 
-  // Удаление только у себя (локально скрывает сообщение)
   deleteForMeBtn.addEventListener('click', async () => {
     if (!selectedMsgContext) return;
-    const msgId = selectedMsgContext.msg.id;
+    hideMsgLocally(selectedMsgContext.msg.id);
     deleteConfirmModal.classList.add('hidden');
-    hideMsgLocally(msgId);
-    await renderMessages();
+    selectedMsgContext = null;
+    if (activeRoom) await renderMessages(activeRoom.id);
   });
 
-  // Удаление у всех (с сервера Supabase)
   deleteForAllBtn.addEventListener('click', async () => {
-    if (!selectedMsgContext) return;
+    if (!selectedMsgContext || !activeRoom) return;
     const msgId = selectedMsgContext.msg.id;
     deleteConfirmModal.classList.add('hidden');
+    selectedMsgContext = null;
+
     await supabaseClient.from('messages').delete().eq('id', msgId);
-    roomMessages = roomMessages.filter((m) => m.id !== msgId);
-    await renderMessages();
+    await loadMessages(activeRoom.id, { silent: true });
   });
 
-  function clearReplyOrEditBar() {
+  function buildCustomVoicePlayer(audioUrl) {
+    const wrap = document.createElement('div');
+    wrap.className = 'voice-player';
+    wrap.addEventListener('click', (ev) => ev.stopPropagation());
+
+    const audio = new Audio(audioUrl);
+    audio.preload = 'metadata';
+
+    const playBtn = document.createElement('button');
+    playBtn.type = 'button';
+    playBtn.className = 'voice-play-btn';
+    playBtn.textContent = '▶';
+
+    const barsWrap = document.createElement('div');
+    barsWrap.className = 'voice-bars';
+    const heights = [35, 65, 50, 85, 45, 95, 60, 75, 40, 88, 55, 70, 50, 80, 45, 60, 35, 50];
+    const barEls = heights.map((h) => {
+      const b = document.createElement('span');
+      b.style.height = `${h}%`;
+      barsWrap.appendChild(b);
+      return b;
+    });
+
+    const durLabel = document.createElement('span');
+    durLabel.className = 'voice-duration';
+    durLabel.textContent = '0:00';
+
+    audio.addEventListener('loadedmetadata', () => {
+      if (isFinite(audio.duration) && audio.duration > 0) {
+        durLabel.textContent = formatSec(Math.round(audio.duration));
+      }
+    });
+
+    audio.addEventListener('timeupdate', () => {
+      const ratio = audio.duration ? audio.currentTime / audio.duration : 0;
+      const activeCount = Math.ceil(ratio * barEls.length);
+      barEls.forEach((b, idx) => b.classList.toggle('played', idx < activeCount));
+      durLabel.textContent = formatSec(Math.floor(audio.currentTime));
+    });
+
+    audio.addEventListener('ended', () => {
+      playBtn.textContent = '▶';
+      barEls.forEach((b) => b.classList.remove('played'));
+    });
+
+    playBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (audio.paused) {
+        audio.play();
+        playBtn.textContent = '⏸';
+      } else {
+        audio.pause();
+        playBtn.textContent = '▶';
+      }
+    });
+
+    wrap.appendChild(playBtn);
+    wrap.appendChild(barsWrap);
+    wrap.appendChild(durLabel);
+    return wrap;
+  }
+
+  function formatSec(sec) {
+    const m = Math.floor(sec / 60);
+    const s = String(sec % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  function setReplyMessage(msg, senderName, plainText) {
+    editingMsg = null;
+    const preview =
+      plainText ||
+      (msg.media_type === 'voice'
+        ? '🎤 Голосовое сообщение'
+        : msg.media_type === 'video_circle'
+        ? '📹 Видеокружочек'
+        : '📎 Вложение');
+    replyToMsg = { senderName, preview };
+    replyTargetAuthor.textContent = `Ответ: ${senderName}`;
+    replyTargetText.textContent = preview;
+    replyPreviewBar.classList.remove('hidden');
+    messageInput.focus();
+  }
+
+  function clearComposerState() {
     replyToMsg = null;
     editingMsg = null;
     replyPreviewBar.classList.add('hidden');
   }
 
-  cancelReplyBtn.addEventListener('click', () => {
-    if (editingMsg) {
-      messageInput.value = '';
-      updateSmartActionButtonUI();
-    }
-    clearReplyOrEditBar();
-  });
+  cancelReplyBtn.addEventListener('click', clearComposerState);
 
-  function buildVoicePlayerHtml() {
-    const heights = [35, 65, 45, 85, 55, 95, 70, 40, 80, 60, 90, 50, 75, 45, 85, 60, 40, 55];
-    const bars = heights.map((h) => `<div class="voice-bar" style="height:${h}%"></div>`).join('');
-    return `
-      <div class="voice-player">
-        <button class="voice-play-btn" type="button">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <polygon points="6 4 20 12 6 20 6 4"/>
-          </svg>
-        </button>
-        <div class="voice-wave">${bars}</div>
-      </div>
-    `;
-  }
-
-  function bindVoicePlayer(container, audioUrl) {
-    const btn = container.querySelector('.voice-play-btn');
-    const bars = Array.from(container.querySelectorAll('.voice-bar'));
-    const audio = new Audio(audioUrl);
-
-    const playIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>`;
-    const pauseIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
-
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      if (audio.paused) {
-        audio.play();
-        btn.innerHTML = pauseIcon;
-      } else {
-        audio.pause();
-        btn.innerHTML = playIcon;
-      }
-    });
-
-    audio.addEventListener('timeupdate', () => {
-      if (!audio.duration) return;
-      const ratio = audio.currentTime / audio.duration;
-      const activeCount = Math.ceil(ratio * bars.length);
-      bars.forEach((b, idx) => b.classList.toggle('played', idx < activeCount));
-    });
-
-    audio.addEventListener('ended', () => {
-      btn.innerHTML = playIcon;
-      bars.forEach((b) => b.classList.remove('played'));
-    });
-  }
-
-  lightbox.addEventListener('click', () => {
-    lightbox.classList.add('hidden');
-    lightboxImg.src = '';
-  });
-
-  // 13. Трансляция индикатора «печатает...»
-  function broadcastUserAction(actionText) {
-    if (!realtimeChannel || !activeRoom || !currentUser) return;
-    const now = Date.now();
-    if (now - lastTypingBroadcastAt < 1500 && actionText === 'печатает...') return;
-    lastTypingBroadcastAt = now;
-
-    realtimeChannel.send({
-      type: 'broadcast',
-      event: 'typing',
-      payload: {
-        room_id: activeRoom.id,
-        user_id: currentUser.id,
-        name: currentUser.display_name,
-        action: actionText
-      }
-    });
-  }
-
-  // 14. УМНАЯ КНОПКА 3-В-1 + ЗАПИСЬ КРУЖОЧКОВ С ПАУЗОЙ И ПЕРЕВОРОТОМ КАМЕРЫ
-  function hasTypedText() {
-    return messageInput.value.trim().length > 0;
-  }
-
+  // 12. Умная кнопка 3-в-1 + Пауза записи + Переключение камеры в видеокружочке
   function updateSmartActionButtonUI() {
-    if (!smartActionBtn) return;
-    if (hasTypedText() || isRecording) {
+    const hasText = messageInput.value.trim().length > 0;
+
+    if (isRecording) {
       smartActionBtn.innerHTML = ICON_SEND;
-      smartActionBtn.title = 'Отправить';
+      smartActionBtn.classList.add('recording-ready');
+      lockHintPill.classList.toggle('hidden', isRecordingLocked);
+      return;
+    }
+
+    smartActionBtn.classList.remove('recording-ready');
+    lockHintPill.classList.add('hidden');
+
+    if (hasText || editingMsg) {
+      smartActionBtn.innerHTML = ICON_SEND;
+      smartActionBtn.title = editingMsg ? 'Сохранить изменения' : 'Отправить сообщение';
     } else if (recordMode === 'video') {
       smartActionBtn.innerHTML = ICON_VIDEO;
-      smartActionBtn.title = 'Тап — сменить на микрофон. Удержание — запись видеокружочка';
+      smartActionBtn.title = 'Тап — переключить на микрофон, Удержание — записать видеокружочек';
     } else {
       smartActionBtn.innerHTML = ICON_MIC;
-      smartActionBtn.title = 'Тап — сменить на видеокружочек. Удержание — запись голоса';
+      smartActionBtn.title = 'Тап — переключить на видеокружочек, Удержание — записать голосовое';
     }
   }
 
-  updateSmartActionButtonUI();
+  async function submitTextMessage() {
+    if (!activeRoom || !currentUser) return;
+    const rawText = messageInput.value.trim();
+    if (!rawText) return;
+
+    messageInput.value = '';
+
+    // Режим редактирования существующего сообщения
+    if (editingMsg) {
+      const editTarget = editingMsg;
+      clearComposerState();
+      updateSmartActionButtonUI();
+
+      let updatedPlain = '';
+      if (editTarget.quoteLine) {
+        updatedPlain += `> ${editTarget.quoteLine}\n`;
+      }
+      updatedPlain += `${rawText}\n[edited]`;
+      if (editTarget.reactionEmoji) {
+        updatedPlain += `\n[react:${editTarget.reactionEmoji}]`;
+      }
+
+      const encrypted = await encryptTextForRoom(updatedPlain, activeRoom);
+
+      const { data: updatedRows, error: upErr } = await supabaseClient
+        .from('messages')
+        .update({ content: encrypted })
+        .eq('id', editTarget.id)
+        .select();
+
+      if (upErr || !updatedRows || updatedRows.length === 0) {
+        await supabaseClient.from('messages').delete().eq('id', editTarget.id);
+        await supabaseClient.from('messages').insert({
+          room_id: activeRoom.id,
+          sender_id: currentUser.id,
+          content: encrypted,
+          media_type: 'text',
+          created_at: editTarget.created_at
+        });
+      }
+
+      await loadMessages(activeRoom.id, { silent: true });
+      return;
+    }
+
+    updateSmartActionButtonUI();
+
+    let finalPlain = rawText;
+    if (replyToMsg) {
+      finalPlain = `> ${replyToMsg.senderName}: ${replyToMsg.preview}\n${rawText}`;
+      clearComposerState();
+    }
+
+    const encrypted = await encryptTextForRoom(finalPlain, activeRoom);
+
+    const { error } = await supabaseClient.from('messages').insert({
+      room_id: activeRoom.id,
+      sender_id: currentUser.id,
+      content: encrypted,
+      media_type: 'text'
+    });
+
+    if (error) {
+      alert('Ошибка отправки: ' + error.message);
+    } else {
+      await loadMessages(activeRoom.id, { silent: true });
+    }
+  }
 
   messageInput.addEventListener('input', () => {
     updateSmartActionButtonUI();
-    if (hasTypedText()) {
-      broadcastUserAction('печатает...');
+    if (!realtimeChannel || !activeRoom || !currentUser) return;
+    const now = Date.now();
+    if (now - lastTypingBroadcastAt > 1500) {
+      lastTypingBroadcastAt = now;
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { room_id: activeRoom.id, user_id: currentUser.id }
+      });
     }
   });
 
   messageInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSendText();
+      submitTextMessage();
+    } else if (e.key === 'Escape' && (replyToMsg || editingMsg)) {
+      clearComposerState();
+      messageInput.value = '';
+      updateSmartActionButtonUI();
     }
   });
 
+  // Вложения (фото и файлы)
   attachBtn.addEventListener('click', () => {
-    if (!activeRoom || isRecording) return;
+    if (!activeRoom) return;
     attachmentInput.click();
   });
 
@@ -1722,59 +2225,52 @@
     if (!file || !activeRoom) return;
     attachmentInput.value = '';
 
-    if (file.size > 45 * 1024 * 1024) {
-      alert('Максимальный размер файла — 45 МБ.');
-      return;
-    }
-
+    const isImg = file.type.startsWith('image/');
     try {
-      if (file.type && file.type.startsWith('image/')) {
-        broadcastUserAction('отправляет фото...');
-        const blob = await compressImage(file, 1280, 0.84);
-        const path = `photos/${currentUser.id}_${Date.now()}.jpg`;
-        const { error: upErr } = await supabaseClient.storage
-          .from('chat-media')
-          .upload(path, blob, { contentType: 'image/jpeg' });
-        if (upErr) throw upErr;
+      let uploadBlob = file;
+      let ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+      let contentType = file.type || 'application/octet-stream';
 
-        const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-        await sendMessage({ content: '', media_type: 'image', media_url: pub.publicUrl });
-      } else {
-        broadcastUserAction('загружает файл...');
-        const safeExt = (file.name.split('.').pop() || 'bin').replace(/[^a-zA-Z0-9]/g, '');
-        const path = `files/${currentUser.id}_${Date.now()}.${safeExt}`;
-        const { error: upErr } = await supabaseClient.storage
-          .from('chat-media')
-          .upload(path, file, { contentType: file.type || 'application/octet-stream' });
-        if (upErr) throw upErr;
-
-        const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-        const sizeStr = formatFileSize(file.size);
-        const taggedUrl = `${pub.publicUrl}#file:${encodeURIComponent(file.name)}:${encodeURIComponent(sizeStr)}`;
-        await sendMessage({ content: '', media_type: 'image', media_url: taggedUrl });
+      if (isImg) {
+        uploadBlob = await compressImage(file, 1280, 0.84);
+        ext = 'jpg';
+        contentType = 'image/jpeg';
       }
+
+      const path = `${activeRoom.id}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+      const { error: upErr } = await supabaseClient.storage
+        .from('chat-media')
+        .upload(path, uploadBlob, { contentType });
+      if (upErr) throw upErr;
+
+      const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+      const captionEncrypted = isImg ? '' : await encryptTextForRoom(file.name, activeRoom);
+
+      await supabaseClient.from('messages').insert({
+        room_id: activeRoom.id,
+        sender_id: currentUser.id,
+        content: captionEncrypted,
+        media_url: pub.publicUrl,
+        media_type: isImg ? 'image' : 'file'
+      });
+      await loadMessages(activeRoom.id, { silent: true });
     } catch (err) {
-      alert('Ошибка загрузки вложения: ' + (err.message || err));
+      alert('Ошибка отправки файла: ' + (err.message || err));
     }
   });
 
-  function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' Б';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
-  }
-
+  // Жесты умной кнопки: короткий тап (переключение) vs удержание (запись) vs свайп вверх (замок)
   smartActionBtn.addEventListener('pointerdown', (e) => {
-    if (!activeRoom) return;
     e.preventDefault();
+    if (!activeRoom) return;
 
-    if (isRecording) {
-      finishAndSendRecording();
+    if (messageInput.value.trim().length > 0 || editingMsg) {
+      submitTextMessage();
       return;
     }
 
-    if (hasTypedText()) {
-      handleSendText();
+    if (isRecording && isRecordingLocked) {
+      finishRecordingAndSend();
       return;
     }
 
@@ -1785,19 +2281,20 @@
 
     holdTimer = setTimeout(() => {
       holdTimer = null;
-      startSmartRecording(recordMode);
-    }, 220);
+      startMediaRecording(recordMode);
+    }, 210);
   });
 
   smartActionBtn.addEventListener('pointermove', (e) => {
     if (!isRecording || isRecordingLocked) return;
-    const deltaY = e.clientY - pointerStartY;
-    if (deltaY < -40) {
-      lockActiveRecording();
+    const deltaY = pointerStartY - e.clientY;
+    if (deltaY > 45) {
+      isRecordingLocked = true;
+      updateSmartActionButtonUI();
     }
   });
 
-  function handlePointerRelease() {
+  function handleSmartPointerEnd() {
     if (holdTimer) {
       clearTimeout(holdTimer);
       holdTimer = null;
@@ -1807,521 +2304,386 @@
       return;
     }
 
-    // Для видеокружочка сразу оставляем интерактивное окно с кнопками Камера / Пауза / Отмена / Отправить,
-    // а для голосового: если не закреплено замком, отпускание пальца отправляет голосовое
-    if (isRecording && !isRecordingLocked && recordMode === 'voice') {
-      finishAndSendRecording();
+    if (isRecording && !isRecordingLocked) {
+      finishRecordingAndSend();
     }
   }
 
-  smartActionBtn.addEventListener('pointerup', handlePointerRelease);
-  smartActionBtn.addEventListener('pointercancel', handlePointerRelease);
+  smartActionBtn.addEventListener('pointerup', handleSmartPointerEnd);
+  smartActionBtn.addEventListener('pointercancel', handleSmartPointerEnd);
 
-  // Кэшируем потоки микрофона и камеры на всю сессию, чтобы браузер НЕ спрашивал разрешение каждый раз!
-  let cachedAudioStream = null;
-  let cachedVideoStream = null;
-  let cachedVideoFacing = null;
-
-  function isStreamAlive(stream) {
-    return stream && stream.getTracks().length > 0 && stream.getTracks().every((t) => t.readyState === 'live');
+  function getElapsedRecordingSeconds() {
+    const runningExtra = isRecordingPaused ? 0 : (Date.now() - lastResumeTime);
+    return Math.floor((elapsedRecordMs + runningExtra) / 1000);
   }
 
-  async function getOrInitAudioStream() {
-    if (isStreamAlive(cachedAudioStream)) {
-      cachedAudioStream.getTracks().forEach((t) => { t.enabled = true; });
+  function updateRecordingTimersUI() {
+    const secStr = formatSec(getElapsedRecordingSeconds());
+    recordingTimer.textContent = secStr;
+    if (vcStatusLabel) {
+      vcStatusLabel.innerHTML = isRecordingPaused
+        ? `⏸ На паузе: <span>${secStr}</span>`
+        : `🔴 Запись: <span>${secStr}</span>`;
+    }
+  }
+
+  async function acquireVoiceStreamOnce() {
+    const hasLiveTracks =
+      cachedAudioStream &&
+      cachedAudioStream.getAudioTracks().some((t) => t.readyState === 'live');
+
+    if (hasLiveTracks) {
+      cachedAudioStream.getAudioTracks().forEach((t) => {
+        t.enabled = true;
+      });
       return cachedAudioStream;
     }
+
     cachedAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     return cachedAudioStream;
   }
 
-  async function openCameraStream(facing) {
-    if (isStreamAlive(cachedVideoStream) && cachedVideoFacing === facing) {
-      cachedVideoStream.getTracks().forEach((t) => { t.enabled = true; });
-      return cachedVideoStream;
-    }
-    if (cachedVideoStream) {
-      cachedVideoStream.getTracks().forEach((t) => t.stop());
-    }
-    cachedVideoStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: { ideal: 480 }, height: { ideal: 480 } },
-      audio: true
-    });
-    cachedVideoFacing = facing;
-    return cachedVideoStream;
-  }
-
-  async function startSmartRecording(mode) {
+  async function startMediaRecording(mode) {
     if (isRecording || !activeRoom) return;
-    isRecording = true;
-    isRecordingLocked = mode === 'video';
-    isRecordingPaused = false;
-    recordCanceled = false;
-    recordedChunks = [];
-    elapsedRecordMs = 0;
-
     try {
-      if (mode === 'video') {
-        activeMediaStream = await openCameraStream(cameraFacingMode);
-        videoCirclePreview.srcObject = activeMediaStream;
-        videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
-        videoCircleOverlay.classList.remove('hidden');
-        vcPauseBtn.textContent = '⏸ Пауза';
-        const mime = getSupportedVideoMime();
-        activeMediaRecorder = mime
-          ? new MediaRecorder(activeMediaStream, { mimeType: mime })
-          : new MediaRecorder(activeMediaStream);
-      } else {
-        activeMediaStream = await getOrInitAudioStream();
-        const mime = getSupportedAudioMime();
-        activeMediaRecorder = mime
-          ? new MediaRecorder(activeMediaStream, { mimeType: mime })
-          : new MediaRecorder(activeMediaStream);
-      }
+      const isVideo = mode === 'video';
+      cameraFacingMode = 'user';
 
-      bindMediaRecorderEvents(mode);
-      activeMediaRecorder.start(250);
+      const stream = isVideo
+        ? await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: { facingMode: cameraFacingMode, width: { ideal: 480 }, height: { ideal: 480 } }
+          })
+        : await acquireVoiceStreamOnce();
+
+      activeMediaStream = stream;
+      isRecording = true;
+      isRecordingLocked = isVideo;
+      isRecordingPaused = false;
+      recordCanceled = false;
+      recordedChunks = [];
+      elapsedRecordMs = 0;
       lastResumeTime = Date.now();
 
-      if (mode === 'voice') {
+      if (isVideo) {
+        videoCirclePreview.srcObject = stream;
+        videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
+        vcPauseBtn.textContent = '⏸ Пауза';
+        videoCircleOverlay.classList.remove('hidden');
+      } else {
         messageInput.classList.add('hidden');
         recordingBar.classList.remove('hidden');
-        lockHintPill.classList.remove('hidden');
-        smartActionBtn.classList.add('recording-hold');
-        recDot.classList.remove('paused');
         pauseVoiceBtn.textContent = '⏸ Пауза';
-        recordingTimer.textContent = '0:00';
-      } else {
-        vcStatusLabel.innerHTML = `🔴 Запись: <span id="vcTimerText">0:00</span>`;
+        recDot.classList.remove('paused');
       }
 
+      updateRecordingTimersUI();
       updateSmartActionButtonUI();
-      broadcastUserAction(mode === 'video' ? 'записывает кружочек...' : 'записывает голосовое...');
 
-      recordTimerInterval = setInterval(() => {
-        if (isRecordingPaused) return;
-        const totalMs = elapsedRecordMs + (Date.now() - lastResumeTime);
-        const sec = Math.floor(totalMs / 1000);
-        const m = Math.floor(sec / 60);
-        const s = String(sec % 60).padStart(2, '0');
-        const formatted = `${m}:${s}`;
-        if (mode === 'voice') {
-          recordingTimer.textContent = formatted;
-        } else {
-          vcStatusLabel.innerHTML = `🔴 Запись: <span>${formatted}</span>`;
-        }
-        broadcastUserAction(mode === 'video' ? 'записывает кружочек...' : 'записывает голосовое...');
-        if (sec >= 60 && activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
-          finishAndSendRecording();
-        }
-      }, 400);
+      recordTimerInterval = setInterval(updateRecordingTimersUI, 300);
+
+      activeMediaRecorder = createMediaRecorderForStream(stream, isVideo);
+      activeMediaRecorder.start(250);
     } catch (err) {
+      alert('Для записи разрешите доступ к микрофону и камере в браузере.');
       cleanupRecordingUI();
-      alert('Разрешите доступ к микрофону и камере в настройках браузера.');
     }
   }
 
-  function bindMediaRecorderEvents(mode) {
-    activeMediaRecorder.ondataavailable = (ev) => {
+  function createMediaRecorderForStream(stream, isVideo) {
+    const mimeOptions = isVideo
+      ? ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
+      : ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+    const supportedMime = mimeOptions.find(
+      (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)
+    );
+
+    const recorder = supportedMime
+      ? new MediaRecorder(stream, { mimeType: supportedMime })
+      : new MediaRecorder(stream);
+
+    recorder.ondataavailable = (ev) => {
       if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
     };
 
-    activeMediaRecorder.onstop = async () => {
-      if (activeMediaRecorder && activeMediaRecorder._switchingCamera) return;
-
-      clearInterval(recordTimerInterval);
-      // НЕ вызываем t.stop(), а просто выключаем передачу звука/видео (t.enabled = false),
-      // чтобы iOS НЕ сбрасывала разрешение и не спрашивала его заново перед каждым сообщением!
-      if (activeMediaStream) {
-        activeMediaStream.getTracks().forEach((t) => { t.enabled = false; });
-      }
+    recorder.onstop = async () => {
+      if (record.keepRecordingOnFlip) return;
 
       const wasCanceled = recordCanceled;
-      const chunksCopy = recordedChunks.slice();
-      const usedMime = activeMediaRecorder?.mimeType || (mode === 'video' ? 'video/mp4' : 'audio/mp4');
-      const usedFacing = cameraFacingMode;
-
+      const chunks = [...recordedChunks];
+      const recMime = recorder.mimeType || (isVideo ? 'video/mp4' : 'audio/webm');
       cleanupRecordingUI();
 
-      if (wasCanceled || !chunksCopy.length) return;
+      if (wasCanceled || chunks.length === 0 || !activeRoom) return;
 
-      const blob = new Blob(chunksCopy, { type: usedMime });
-      if (blob.size < 400) return;
+      const blob = new Blob(chunks, { type: recMime });
+      const ext = isVideo
+        ? recMime.includes('mp4') ? 'mp4' : 'webm'
+        : recMime.includes('mp4') ? 'm4a' : 'webm';
+      const path = `${activeRoom.id}/${isVideo ? 'circle' : 'voice'}_${Date.now()}.${ext}`;
 
       try {
-        if (mode === 'video') {
-          broadcastUserAction('отправляет кружочек...');
-          const ext = usedMime.includes('mp4') ? 'mp4' : 'webm';
-          const path = `circles/${currentUser.id}_${Date.now()}.${ext}`;
-          const { error: upErr } = await supabaseClient.storage
-            .from('chat-media')
-            .upload(path, blob, { contentType: usedMime });
-          if (upErr) throw upErr;
+        const { error: upErr } = await supabaseClient.storage
+          .from('chat-media')
+          .upload(path, blob, { contentType: blob.type });
+        if (upErr) throw upErr;
 
-          const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-          const tag = usedFacing === 'environment' ? '#circle-rear' : '#circle';
-          await sendMessage({
-            content: '',
-            media_type: 'audio',
-            media_url: `${pub.publicUrl}${tag}`
-          });
-        } else {
-          broadcastUserAction('отправляет голосовое...');
-          const ext = usedMime.includes('mp4') ? 'm4a' : 'webm';
-          const path = `voice/${currentUser.id}_${Date.now()}.${ext}`;
-          const { error: upErr } = await supabaseClient.storage
-            .from('chat-media')
-            .upload(path, blob, { contentType: usedMime });
-          if (upErr) throw upErr;
-
-          const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-          await sendMessage({
-            content: '',
-            media_type: 'audio',
-            media_url: pub.publicUrl
-          });
-        }
+        const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+        await supabaseClient.from('messages').insert({
+          room_id: activeRoom.id,
+          sender_id: currentUser.id,
+          content: '',
+          media_url: pub.publicUrl,
+          media_type: isVideo ? 'video_circle' : 'voice'
+        });
+        await loadMessages(activeRoom.id, { silent: true });
       } catch (err) {
-        alert('Ошибка отправки записи: ' + (err.message || err));
+        alert('Не удалось отправить запись: ' + (err.message || err));
       }
     };
+
+    return recorder;
   }
 
-  function cleanupRecordingUI() {
-    videoCircleOverlay.classList.add('hidden');
-    recordingBar.classList.add('hidden');
-    lockHintPill.classList.add('hidden');
-    messageInput.classList.remove('hidden');
-    smartActionBtn.classList.remove('recording-hold');
-    isRecording = false;
-    isRecordingLocked = false;
-    isRecordingPaused = false;
-    activeMediaRecorder = null;
-    updateSmartActionButtonUI();
-  }
+  const record = { keepRecordingOnFlip: false };
 
-  function lockActiveRecording() {
-    if (!isRecording || isRecordingLocked) return;
-    isRecordingLocked = true;
-    lockHintPill.classList.add('hidden');
-    smartActionBtn.classList.remove('recording-hold');
-    updateSmartActionButtonUI();
-  }
-
-  // Пауза / Продолжить для голосового сообщения
-  pauseVoiceBtn.addEventListener('click', () => {
+  function togglePauseRecording() {
     if (!isRecording || !activeMediaRecorder) return;
-    lockActiveRecording();
-    togglePauseRecording('voice');
-  });
-
-  // Пауза / Продолжить для видеокружочка
-  vcPauseBtn.addEventListener('click', () => {
-    if (!isRecording || !activeMediaRecorder) return;
-    togglePauseRecording('video');
-  });
-
-  function togglePauseRecording(mode) {
-    try {
-      if (!isRecordingPaused && activeMediaRecorder.state === 'recording') {
-        activeMediaRecorder.pause();
-        elapsedRecordMs += Date.now() - lastResumeTime;
-        isRecordingPaused = true;
-        if (mode === 'voice') {
-          recDot.classList.add('paused');
-          pauseVoiceBtn.textContent = '▶ Далее';
-        } else {
-          vcPauseBtn.textContent = '▶ Далее';
-          vcStatusLabel.innerHTML = `⏸ На паузе`;
-        }
-      } else if (isRecordingPaused && activeMediaRecorder.state === 'paused') {
-        activeMediaRecorder.resume();
-        lastResumeTime = Date.now();
-        isRecordingPaused = false;
-        if (mode === 'voice') {
-          recDot.classList.remove('paused');
-          pauseVoiceBtn.textContent = '⏸ Пауза';
-        } else {
-          vcPauseBtn.textContent = '⏸ Пауза';
-        }
+    if (!isRecordingPaused) {
+      isRecordingPaused = true;
+      elapsedRecordMs += Date.now() - lastResumeTime;
+      if (activeMediaRecorder.state === 'recording' && activeMediaRecorder.pause) {
+        try { activeMediaRecorder.pause(); } catch (e) {}
       }
-    } catch (e) {}
+      pauseVoiceBtn.textContent = '▶ Продолжить';
+      vcPauseBtn.textContent = '▶ Дальше';
+      recDot.classList.add('paused');
+    } else {
+      isRecordingPaused = false;
+      lastResumeTime = Date.now();
+      if (activeMediaRecorder.state === 'paused' && activeMediaRecorder.resume) {
+        try { activeMediaRecorder.resume(); } catch (e) {}
+      }
+      pauseVoiceBtn.textContent = '⏸ Пауза';
+      vcPauseBtn.textContent = '⏸ Пауза';
+      recDot.classList.remove('paused');
+    }
+    updateRecordingTimersUI();
   }
 
-  // Переворот камеры (Фронтальная ↔ Основная) в видеокружочке
+  pauseVoiceBtn.addEventListener('click', togglePauseRecording);
+  vcPauseBtn.addEventListener('click', togglePauseRecording);
+
   vcFlipCamBtn.addEventListener('click', async () => {
-    if (!isRecording) return;
+    if (!isRecording || recordMode !== 'video') return;
     cameraFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
     try {
+      record.keepRecordingOnFlip = true;
       if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
-        activeMediaRecorder._switchingCamera = true;
         activeMediaRecorder.stop();
       }
       if (activeMediaStream) {
         activeMediaStream.getTracks().forEach((t) => t.stop());
       }
-      recordedChunks = []; // Начинаем запись с выбранного ракурса камеры
-      elapsedRecordMs = 0;
-      lastResumeTime = Date.now();
-      isRecordingPaused = false;
-      vcPauseBtn.textContent = '⏸ Пауза';
 
-      activeMediaStream = await openCameraStream(cameraFacingMode);
-      videoCirclePreview.srcObject = activeMediaStream;
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: cameraFacingMode, width: { ideal: 480 }, height: { ideal: 480 } }
+      });
+
+      activeMediaStream = newStream;
+      videoCirclePreview.srcObject = newStream;
       videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
 
-      const mime = getSupportedVideoMime();
-      activeMediaRecorder = mime
-        ? new MediaRecorder(activeMediaStream, { mimeType: mime })
-        : new MediaRecorder(activeMediaStream);
-      bindMediaRecorderEvents('video');
+      record.keepRecordingOnFlip = false;
+      activeMediaRecorder = createMediaRecorderForStream(newStream, true);
       activeMediaRecorder.start(250);
+      if (isRecordingPaused && activeMediaRecorder.pause) {
+        try { activeMediaRecorder.pause(); } catch (e) {}
+      }
     } catch (err) {
+      record.keepRecordingOnFlip = false;
       alert('Не удалось переключить камеру: ' + (err.message || err));
     }
   });
 
-  // Отправка и отмена кружочка / голосового
-  vcSendBtn.addEventListener('click', () => finishAndSendRecording());
-
-  vcCancelBtn.addEventListener('click', () => {
+  function finishRecordingAndSend() {
     if (!isRecording || !activeMediaRecorder) return;
-    recordCanceled = true;
+    recordCanceled = false;
+    record.keepRecordingOnFlip = false;
     if (activeMediaRecorder.state !== 'inactive') {
+      activeMediaRecorder.stop();
+    }
+  }
+
+  function cancelActiveRecording() {
+    if (!isRecording) return;
+    recordCanceled = true;
+    record.keepRecordingOnFlip = false;
+    if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
       activeMediaRecorder.stop();
     } else {
       cleanupRecordingUI();
     }
-  });
-
-  function finishAndSendRecording() {
-    if (!isRecording || !activeMediaRecorder) return;
-    recordCanceled = false;
-    if (activeMediaRecorder.state !== 'inactive') {
-      activeMediaRecorder.stop();
-    }
   }
 
-  cancelRecordBtn.addEventListener('click', () => {
-    if (!isRecording || !activeMediaRecorder) return;
-    recordCanceled = true;
-    if (activeMediaRecorder.state !== 'inactive') {
-      activeMediaRecorder.stop();
-    }
-  });
+  cancelRecordBtn.addEventListener('click', cancelActiveRecording);
+  vcCancelBtn.addEventListener('click', cancelActiveRecording);
+  vcSendBtn.addEventListener('click', finishRecordingAndSend);
 
-  // 15. Отправка и Редактирование текстовых сообщений
-  async function handleSendText() {
-    if (!activeRoom) return;
-    let text = messageInput.value.trim();
-    if (!text) return;
-    messageInput.value = '';
+  function cleanupRecordingUI() {
+    isRecording = false;
+    isRecordingLocked = false;
+    isRecordingPaused = false;
+    clearInterval(recordTimerInterval);
+    if (activeMediaStream) {
+      if (activeMediaStream === cachedAudioStream) {
+        activeMediaStream.getAudioTracks().forEach((t) => {
+          t.enabled = false;
+        });
+      } else {
+        activeMediaStream.getTracks().forEach((t) => t.stop());
+      }
+      activeMediaStream = null;
+    }
+    videoCirclePreview.srcObject = null;
+    videoCircleOverlay.classList.add('hidden');
+    recordingBar.classList.add('hidden');
+    messageInput.classList.remove('hidden');
     updateSmartActionButtonUI();
-
-    // Если редактируем существующее сообщение
-    if (editingMsg) {
-      const targetId = editingMsg.id;
-      const origCreatedAt = editingMsg.created_at;
-      const quotePrefix = editingMsg.quoteLine ? `>>${editingMsg.quoteLine}\n` : '';
-      const fullPlain = `[edit]${quotePrefix}${text}`;
-      clearReplyOrEditBar();
-
-      const encryptedContent = await encryptTextForRoom(fullPlain, activeRoom);
-
-      // Обновляем локально
-      const idx = roomMessages.findIndex((m) => m.id === targetId);
-      if (idx !== -1) {
-        roomMessages[idx].content = encryptedContent;
-        await renderMessages();
-      }
-
-      // Заменяем запись в Supabase с сохранением исходного id и времени created_at
-      await supabaseClient.from('messages').delete().eq('id', targetId);
-      const { error } = await supabaseClient.from('messages').insert({
-        id: targetId,
-        room_id: activeRoom.id,
-        sender_id: currentUser.id,
-        sender_name: currentUser.display_name,
-        sender_color: currentUser.color,
-        content: encryptedContent,
-        media_type: 'text',
-        media_url: null,
-        created_at: origCreatedAt
-      });
-
-      if (error) {
-        alert('Не удалось сохранить изменения: ' + error.message);
-      }
-      return;
-    }
-
-    if (replyToMsg) {
-      const shortQuote = replyToMsg.text.slice(0, 70);
-      text = `>>${replyToMsg.author}: ${shortQuote}\n${text}`;
-      clearReplyOrEditBar();
-    }
-
-    const encryptedContent = await encryptTextForRoom(text, activeRoom);
-    await sendMessage({ content: encryptedContent, media_type: 'text', media_url: null });
   }
 
-  async function sendMessage({ content, media_type, media_url }) {
-    const msg = {
-      id: window.crypto?.randomUUID ? crypto.randomUUID() : 'msg_' + Date.now(),
-      room_id: activeRoom.id,
-      sender_id: currentUser.id,
-      sender_name: currentUser.display_name,
-      sender_color: currentUser.color,
-      content: content || '',
-      media_type: media_type || 'text',
-      media_url: media_url || null,
-      created_at: new Date().toISOString()
-    };
-
-    roomMessages.push(msg);
-    await renderMessages();
-
-    const { error } = await supabaseClient.from('messages').insert({
-      id: msg.id,
-      room_id: msg.room_id,
-      sender_id: msg.sender_id,
-      sender_name: msg.sender_name,
-      sender_color: msg.sender_color,
-      content: msg.content,
-      media_type: msg.media_type,
-      media_url: msg.media_url
-    });
-
-    if (error) {
-      alert('Ошибка отправки: ' + error.message);
-    }
-  }
-
-  // 16. Realtime подписка
+  // 13. Realtime-подписка: мгновенные сообщения, уведомления и регистрация новых друзей
   function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
-    realtimeChannel = supabaseClient.channel('pulse-global-v5', {
-      config: {
-        presence: { key: currentUser.id }
-      }
-    });
-
-    realtimeChannel
+    realtimeChannel = supabaseClient
+      .channel('pulse-live-v8', {
+        config: { presence: { key: currentUser.id } }
+      })
       .on('presence', { event: 'sync' }, () => {
         const state = realtimeChannel.presenceState();
         onlineUserIds.clear();
         onlineUserIds.add(currentUser.id);
         Object.keys(state).forEach((uid) => onlineUserIds.add(uid));
-        myRooms = myRooms.map((r) => decorateRoomForUser(r));
-        if (activeRoom) {
-          const updated = myRooms.find((r) => r.id === activeRoom.id);
-          if (updated) activeRoom = updated;
-        }
-        updateActiveRoomHeaderUI();
         renderSidebarList();
+        updateActiveRoomHeader();
       })
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (!payload || payload.user_id === currentUser.id) return;
-        typingByRoom.set(payload.room_id, {
-          name: payload.name || 'Собеседник',
-          action: payload.action || 'печатает...',
-          expiresAt: Date.now() + 3000
-        });
-        updateActiveRoomHeaderUI();
+        typingByRoom.set(payload.room_id, { userId: payload.user_id, ts: Date.now() });
         renderSidebarList();
+        updateActiveRoomHeader();
         setTimeout(() => {
-          updateActiveRoomHeaderUI();
           renderSidebarList();
-        }, 3100);
+          updateActiveRoomHeader();
+        }, 3600);
       })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
-        const incoming = payload.new;
-        if (incoming.sender_id !== currentUser.id) {
-          typingByRoom.delete(incoming.room_id);
-          playNotificationSound();
-        }
-        if (activeRoom && incoming.room_id === activeRoom.id) {
-          const existingIdx = roomMessages.findIndex((m) => m.id === incoming.id);
-          if (existingIdx !== -1) {
-            roomMessages[existingIdx] = incoming;
-          } else {
-            roomMessages.push(incoming);
-            roomMessages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        async (payload) => {
+          const incoming = payload.new || payload.old;
+          if (!incoming) return;
+
+          if (payload.eventType === 'INSERT' && payload.new) {
+            await handleIncomingMessageNotification(payload.new);
           }
-          await renderMessages();
-          updateActiveRoomHeaderUI();
-        } else {
+
+          if (activeRoom && incoming.room_id === activeRoom.id) {
+            await loadMessages(activeRoom.id, { silent: true });
+            await markRoomMessagesAsRead(activeRoom.id);
+          } else if (incoming.room_id) {
+            // Обновляем фоновый кэш комнаты, чтобы при нажатии на неё сообщения открылись мгновенно
+            const { data } = await supabaseClient
+              .from('messages')
+              .select('*')
+              .eq('room_id', incoming.room_id)
+              .order('created_at', { ascending: true })
+              .limit(250);
+            if (data) roomMessagesCache.set(incoming.room_id, data);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rooms' },
+        async () => {
           await refreshDirectoryAndRooms();
         }
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, async (payload) => {
-        const deletedId = payload.old?.id;
-        if (deletedId && activeRoom) {
-          // Небольшая задержка на случай, если удаление было частью редактирования (delete + insert)
-          setTimeout(async () => {
-            await loadMessages(activeRoom.id);
-          }, 250);
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles' },
+        async (payload) => {
+          const wasKnown = payload.new ? allProfiles.some((p) => p.id === payload.new.id) : true;
+          await refreshDirectoryAndRooms();
+          if (payload.eventType === 'INSERT' && payload.new && payload.new.id !== currentUser.id && !wasKnown) {
+            const newPerson = unpackProfile(payload.new);
+            if (newPerson) {
+              playNotificationSound();
+              showInAppToast({
+                title: '🎉 Новый пользователь в Pulse!',
+                text: `${newPerson.display_name} (@${newPerson.username}) зарегистрировался`,
+                peer: newPerson,
+                roomId: null
+              });
+              sendSystemNotification(
+                'Новый пользователь в Pulse!',
+                `${newPerson.display_name} (@${newPerson.username}) теперь в мессенджере.`,
+                null
+              );
+            }
+          }
         }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, () => {
-        refreshDirectoryAndRooms();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
-        refreshDirectoryAndRooms();
-      })
+      )
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          await realtimeChannel.track({
-            user_id: currentUser.id,
-            online_at: new Date().toISOString()
-          });
+          await realtimeChannel.track({ online_at: new Date().toISOString() });
         }
       });
   }
 
-  function getSupportedAudioMime() {
-    const list = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'];
-    for (const m of list) {
-      if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
-    }
-    return '';
-  }
-
-  function getSupportedVideoMime() {
-    const list = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
-    for (const m of list) {
-      if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
-    }
-    return '';
-  }
-
-  function compressImage(file, maxSide = 1280, quality = 0.84) {
+  // 14. Сжатие изображений и утилиты
+  function compressImage(file, maxDim = 1280, quality = 0.84) {
     return new Promise((resolve, reject) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        let { width, height } = img;
-        if (width > maxSide || height > maxSide) {
-          if (width > height) {
-            height = Math.round((height * maxSide) / width);
-            width = maxSide;
-          } else {
-            width = Math.round((width * maxSide) / height);
-            height = maxSide;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
           }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Ошибка сжатия'))), 'image/jpeg', quality);
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob(
+            (blob) => (blob ? resolve(blob) : reject(new Error('Ошибка сжатия'))),
+            'image/jpeg',
+            quality
+          );
+        };
+        img.onerror = reject;
+        img.src = ev.target.result;
       };
-      img.onerror = reject;
-      img.src = url;
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
     });
   }
+
+  lightbox.addEventListener('click', () => {
+    lightbox.classList.add('hidden');
+    lightboxImg.src = '';
+  });
 
   function escapeHtml(str) {
     return String(str || '')
@@ -2329,6 +2691,12 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    });
   }
 
   if (initSupabase()) {

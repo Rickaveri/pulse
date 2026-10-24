@@ -76,6 +76,81 @@ input, textarea {
   display: none !important;
 }
 
+/* Всплывающее Push-уведомление в верхней части экрана (как в Telegram / iOS) */
+.inapp-toast {
+  position: fixed;
+  top: calc(10px + var(--safe-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100vw - 24px);
+  max-width: 400px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 18px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  z-index: 300;
+  cursor: pointer;
+  animation: toastSlideDown 0.22s ease-out;
+}
+
+@keyframes toastSlideDown {
+  from { opacity: 0; transform: translate(-50%, -20px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toast-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+/* Плашка включения Push-уведомлений в списке чатов */
+.push-prompt-banner {
+  margin: 4px 12px 8px;
+  padding: 10px 12px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.push-enable-btn {
+  background: var(--accent-gradient);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* Авторизация и модальные окна */
 .overlay-screen {
   position: fixed;
@@ -384,7 +459,7 @@ input, textarea {
   transform: translateX(19px);
 }
 
-/* Основной макет: покрывает все 100% физического экрана iPhone до нижнего края */
+/* Основной макет */
 .app-shell {
   display: flex;
   width: 100vw;
@@ -645,7 +720,7 @@ input, textarea {
 .chat-item-top {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 
@@ -657,13 +732,42 @@ input, textarea {
   text-overflow: ellipsis;
 }
 
+.chat-item-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chat-item-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .chat-item-sub {
   font-size: 13px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px;
+  flex: 1;
+}
+
+.unread-badge {
+  background: var(--accent-gradient);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .typing-highlight {
