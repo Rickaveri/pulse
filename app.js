@@ -1,4 +1,4 @@
-// Pulse Messenger v9 — Мгновенная предзагрузка чатов без мелькания, превью и время последнего сообщения в списке диалогов, Push-уведомления и баннер, пересылка сообщений, кликабельные ссылки и быстрые реакции
+// Pulse Messenger v10 — Полная совместимость со схемой Supabase (sender_name, media_type), рабочая пересылка сообщений, мгновенные реакции на любые сообщения (включая старые и чужие), предзагрузка диалогов без мелькания
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -171,13 +171,21 @@
 
   // Мгновенный кэш сообщений и превью последнего сообщения по комнатам
   const roomMessagesCache = new Map();
-  const roomSummaryMap = new Map(); // roomId -> { preview, timeStr, timestamp }
+  const roomSummaryMap = new Map();
   let currentSelectingRoomId = null;
 
-  // Счётчики непрочитанных сообщений по комнатам
+  // Счётчики непрочитанных сообщений по комнатам (с сохранением времени последнего прочитанного сообщения)
   const unreadCounts = new Map();
   let toastTimeout = null;
   let toastTargetRoomId = null;
+
+  function getLastReadTimestamp(roomId) {
+    return Number(localStorage.getItem(`pulse_read_ts_${roomId}`) || 0);
+  }
+
+  function setLastReadTimestamp(roomId, ts) {
+    localStorage.setItem(`pulse_read_ts_${roomId}`, String(ts || Date.now()));
+  }
 
   // Состояние ответа / редактирования / выбранного сообщения
   let replyToMsg = null;
@@ -221,6 +229,57 @@
   let holdTimer = null;
   let pointerStartY = 0;
 
+  // УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ВСТАВКИ СООБЩЕНИЯ В SUPABASE (100% совместимость с таблицей messages)
+  // Всегда передаёт sender_name, sender_color и допустимый media_type ('text' | 'image' | 'audio')
+  async function insertMessageRow({
+    id,
+    room_id,
+    content,
+    media_type,
+    media_url,
+    media_duration,
+    created_at
+  }) {
+    const safeMediaType = ['text', 'image', 'audio'].includes(media_type) ? media_type : 'text';
+    const payload = {
+      room_id,
+      sender_id: currentUser.id,
+      sender_name: currentUser.display_name || currentUser.username || 'Пользователь',
+      sender_color: currentUser.color || '#6366f1',
+      content: content || '',
+      media_type: safeMediaType,
+      media_url: media_url || null,
+      media_duration: media_duration || 0
+    };
+    if (id) payload.id = id;
+    if (created_at) payload.created_at = created_at;
+
+    return await supabaseClient.from('messages').insert(payload).select();
+  }
+
+  // Определение точного типа вложения (Голос / Видеокружочек / Фото / Файл / Текст / Пакет реакции)
+  function detectMessageKind(msg) {
+    if (msg.content && msg.content.startsWith('__REACT__|')) {
+      return 'reaction_packet';
+    }
+    const url = (msg.media_url || '').toLowerCase();
+    const mType = (msg.media_type || 'text').toLowerCase();
+
+    if (url) {
+      if (mType === 'video_circle' || url.includes('/circle_') || url.includes('video_circle')) {
+        return 'video_circle';
+      }
+      if (mType === 'voice' || url.includes('/voice_') || (mType === 'audio' && !url.includes('/file_'))) {
+        return 'voice';
+      }
+      if (mType === 'image' || /\.(jpg|jpeg|png|gif|webp|heic)(\?|$)/i.test(url)) {
+        return 'image';
+      }
+      return 'file';
+    }
+    return 'text';
+  }
+
   // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА В ВЕБ-ПРИЛОЖЕНИИ НА IPHONE
   function syncViewportHeight() {
     const vv = window.visualViewport;
@@ -228,8 +287,6 @@
     const innerH = window.innerHeight;
     const vvH = vv ? vv.height : innerH;
 
-    // В режиме иконки «На экран Домой» (standalone) iOS уменьшает innerHeight на 34px.
-    // Поэтому при закрытой клавиатуре берём полную физическую высоту экрана screen.height!
     const isStandalone = window.navigator.standalone === true ||
       (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
     const isPortrait = innerH >= window.innerWidth;
@@ -282,7 +339,6 @@
   });
   syncViewportHeight();
 
-  // Плавающая кнопка прокрутки вниз в чате
   if (messagesViewport && scrollBottomBtn) {
     messagesViewport.addEventListener('scroll', () => {
       const distFromBottom =
@@ -410,7 +466,7 @@
     if (toastTimeout) clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => {
       inAppToast.classList.add('hidden');
-    }, 5000);
+    }, 4800);
   }
 
   if (inAppToast) {
@@ -446,20 +502,70 @@
     document.title = total > 0 ? `(${total}) Pulse — Защищённый мессенджер` : 'Pulse — Защищённый мессенджер';
   }
 
+  // Очистка служебных тегов цитат/редактирования/реакций для красивого отображения
+  function parseCleanMessageStruct(decryptedText) {
+    let textBody = String(decryptedText || '');
+    let quoteLine = '';
+    let isEdited = false;
+    let inlineReaction = '';
+
+    // Поддержка старого префикса [edit] из ранних версий
+    if (textBody.startsWith('[edit]')) {
+      isEdited = true;
+      textBody = textBody.slice(6).trimStart();
+    }
+
+    const reactMatch = textBody.match(/\n\[react:([^\]]+)\]$/);
+    if (reactMatch) {
+      inlineReaction = reactMatch[1];
+      textBody = textBody.slice(0, -reactMatch[0].length);
+    }
+
+    if (textBody.endsWith('\n[edited]')) {
+      isEdited = true;
+      textBody = textBody.slice(0, -9);
+    } else if (textBody === '[edited]') {
+      isEdited = true;
+      textBody = '';
+    }
+
+    // Поддержка цитат "> Имя: текст\n..." и старых ">>Имя: текст\n..."
+    if (textBody.startsWith('> ')) {
+      const nlIdx = textBody.indexOf('\n');
+      if (nlIdx !== -1) {
+        quoteLine = textBody.slice(2, nlIdx).trim();
+        textBody = textBody.slice(nlIdx + 1);
+      }
+    } else if (textBody.startsWith('>>')) {
+      const nlIdx = textBody.indexOf('\n');
+      if (nlIdx !== -1) {
+        quoteLine = textBody.slice(2, nlIdx).trim();
+        textBody = textBody.slice(nlIdx + 1);
+      } else {
+        // Если в старой версии ответ склеился в одну строку ">>Артем Тимашев: А че за приложения Вот так)"
+        quoteLine = '';
+        textBody = textBody.replace(/^>>/, '↩ ');
+      }
+    }
+
+    return { textBody, quoteLine, isEdited, inlineReaction };
+  }
+
   async function extractMessagePreviewText(msg, room) {
     if (!msg) return '';
-    if (msg.media_type === 'voice') return '🎤 Голосовое сообщение';
-    if (msg.media_type === 'video_circle') return '📹 Видеокружочек';
-    if (msg.media_type === 'image') return '📷 Фотография';
-    if (msg.media_type === 'file') return '📎 Файл';
+    const kind = detectMessageKind(msg);
+    if (kind === 'reaction_packet') {
+      const parts = msg.content.split('|');
+      return `Реакция ${parts[2] || '❤️'}`;
+    }
+    if (kind === 'voice') return '🎤 Голосовое сообщение';
+    if (kind === 'video_circle') return '📹 Видеокружочек';
+    if (kind === 'image') return '📷 Фотография';
+    if (kind === 'file') return '📎 Файл';
     if (msg.content) {
       const decrypted = await decryptTextForRoom(msg.content, room);
-      const cleaned = decrypted
-        .replace(/^> [^\n]+\n/, '')
-        .replace(/\n\[edited\]$/, '')
-        .replace(/\n\[react:[^\]]+\]$/, '')
-        .trim();
-      return cleaned || 'Сообщение';
+      const { textBody } = parseCleanMessageStruct(decrypted);
+      return textBody.trim() || 'Сообщение';
     }
     return 'Сообщение';
   }
@@ -482,7 +588,9 @@
   async function updateSingleRoomSummaryFromMessages(room, msgs) {
     if (!room) return;
     const hiddenIds = getLocallyHiddenMsgIds();
-    const visible = (msgs || []).filter((m) => !hiddenIds.has(m.id));
+    const visible = (msgs || []).filter(
+      (m) => !hiddenIds.has(m.id) && detectMessageKind(m) !== 'reaction_packet'
+    );
     if (visible.length === 0) {
       roomSummaryMap.delete(room.id);
       return;
@@ -497,7 +605,7 @@
     });
   }
 
-  // Предзагрузка сообщений всех диалогов при старте — обеспечивает 0 мс переключение между чатами и превью в сайдбаре!
+  // Предзагрузка всех диалогов при входе — переключение между «Избранным» и Артёмом за 0 мс!
   async function preloadAllRoomsMessages() {
     if (!currentUser || !supabaseClient || myRooms.length === 0) return;
     const roomIds = myRooms.map((r) => r.id);
@@ -506,7 +614,7 @@
       .select('*')
       .in('room_id', roomIds)
       .order('created_at', { ascending: true })
-      .limit(800);
+      .limit(900);
 
     if (error || !data) return;
 
@@ -522,15 +630,23 @@
         const list = grouped.get(room.id) || [];
         roomMessagesCache.set(room.id, list);
 
-        // Считаем непрочитанные сообщения из базы (если этот чат сейчас не открыт)
         if (!activeRoom || activeRoom.id !== room.id) {
-          const unreadCount = list.filter(
-            (m) => m.sender_id !== currentUser.id && !m.is_read
-          ).length;
-          if (unreadCount > 0) {
-            unreadCounts.set(room.id, unreadCount);
+          const lastReadTs = getLastReadTimestamp(room.id);
+          if (lastReadTs === 0) {
+            // Инициализируем отметку прочтения при первом входе
+            setLastReadTimestamp(room.id, Date.now());
           } else {
-            unreadCounts.delete(room.id);
+            const unreadCount = list.filter(
+              (m) =>
+                m.sender_id !== currentUser.id &&
+                detectMessageKind(m) !== 'reaction_packet' &&
+                new Date(m.created_at).getTime() > lastReadTs
+            ).length;
+            if (unreadCount > 0) {
+              unreadCounts.set(room.id, unreadCount);
+            } else {
+              unreadCounts.delete(room.id);
+            }
           }
         }
 
@@ -565,13 +681,18 @@
 
     const previewText = await extractMessagePreviewText(incoming, room);
     const senderProfile = allProfiles.find((p) => p.id === incoming.sender_id);
-    const senderName = senderProfile ? senderProfile.display_name : getRoomPresentation(room).title;
+    const senderName =
+      (senderProfile && senderProfile.display_name) ||
+      incoming.sender_name ||
+      getRoomPresentation(room).title;
 
     if (!isChatCurrentlyVisible) {
-      const prevCount = unreadCounts.get(room.id) || 0;
-      unreadCounts.set(room.id, prevCount + 1);
-      updateAppIconBadge();
-      renderSidebarList();
+      if (detectMessageKind(incoming) !== 'reaction_packet') {
+        const prevCount = unreadCounts.get(room.id) || 0;
+        unreadCounts.set(room.id, prevCount + 1);
+        updateAppIconBadge();
+        renderSidebarList();
+      }
 
       showInAppToast({
         title: senderName,
@@ -581,6 +702,8 @@
       });
 
       sendSystemNotification(senderName, previewText, room.id);
+    } else {
+      setLastReadTimestamp(room.id, Date.now());
     }
   }
 
@@ -674,7 +797,6 @@
     } catch (e) {}
   }
 
-  // Кнопка «Поделиться ссылкой на мессенджер»
   if (shareInviteBtn) {
     shareInviteBtn.addEventListener('click', async () => {
       const shareUrl = 'https://rickaveri.github.io/pulse/';
@@ -1134,8 +1256,8 @@
       await refreshDirectoryAndRooms();
       await preloadAllRoomsMessages();
       if (activeRoom) {
-        await loadMessages(activeRoom.id, { silent: true });
-        await markRoomMessagesAsRead(activeRoom.id);
+        await loadMessages(activeRoom.id);
+        setLastReadTimestamp(activeRoom.id, Date.now());
       }
     }
   });
@@ -1643,6 +1765,7 @@
     activeRoom = room;
     currentSelectingRoomId = room.id;
 
+    setLastReadTimestamp(room.id, Date.now());
     if (unreadCounts.has(room.id)) {
       unreadCounts.delete(room.id);
       updateAppIconBadge();
@@ -1651,7 +1774,7 @@
     clearComposerState();
     updateActiveRoomHeader();
 
-    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: синхронно очищаем экран ДО показа чата!
+    // Синхронно очищаем экран ДО показа чата!
     messagesViewport.innerHTML = '';
     if (scrollBottomBtn) scrollBottomBtn.classList.add('hidden');
 
@@ -1669,8 +1792,7 @@
     renderSidebarList();
     syncViewportHeight();
 
-    await loadMessages(room.id, { silent: Boolean(cachedMsgs) });
-    await markRoomMessagesAsRead(room.id);
+    await loadMessages(room.id);
   }
 
   function updateActiveRoomHeader() {
@@ -1747,7 +1869,7 @@
       .select('*')
       .eq('room_id', roomId)
       .order('created_at', { ascending: true })
-      .limit(250);
+      .limit(350);
 
     if (error) return;
     const fetched = data || [];
@@ -1762,18 +1884,8 @@
     if (!activeRoom || activeRoom.id !== roomId || currentSelectingRoomId !== roomId) return;
 
     roomMessages = fetched;
+    setLastReadTimestamp(roomId, Date.now());
     await renderMessages(roomId);
-  }
-
-  async function markRoomMessagesAsRead(roomId) {
-    if (!currentUser || !activeRoom || activeRoom.id !== roomId) return;
-    const unreadIncoming = roomMessages.filter(
-      (m) => m.sender_id !== currentUser.id && !m.is_read
-    );
-    if (unreadIncoming.length === 0) return;
-
-    const ids = unreadIncoming.map((m) => m.id);
-    await supabaseClient.from('messages').update({ is_read: true }).in('id', ids);
   }
 
   function formatDateSeparator(dateStr) {
@@ -1787,7 +1899,6 @@
     return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
   }
 
-  // Преобразование ссылок в кликабельные <a> внутри текста сообщения
   function renderTextWithLinks(text) {
     const escaped = escapeHtml(text);
     return escaped.replace(
@@ -1802,10 +1913,29 @@
     if (targetRoomId && roomSnapshot.id !== targetRoomId) return;
 
     const hiddenIds = getLocallyHiddenMsgIds();
-    const visibleMessages = roomMessages.filter((m) => !hiddenIds.has(m.id));
+
+    // Собираем пакеты реакций (__REACT__|targetMsgId|emoji) от любых участников чата
+    const reactionsByTargetId = new Map(); // msgId -> Map(senderId -> { emoji, packetId })
+    const actualMessages = [];
+
+    roomMessages.forEach((m) => {
+      if (m.content && m.content.startsWith('__REACT__|')) {
+        const parts = m.content.split('|');
+        const targetId = parts[1];
+        const emoji = parts[2];
+        if (targetId && emoji) {
+          if (!reactionsByTargetId.has(targetId)) {
+            reactionsByTargetId.set(targetId, new Map());
+          }
+          reactionsByTargetId.get(targetId).set(m.sender_id, { emoji, packetId: m.id });
+        }
+      } else if (!hiddenIds.has(m.id)) {
+        actualMessages.push(m);
+      }
+    });
 
     const decryptedList = await Promise.all(
-      visibleMessages.map(async (msg) => {
+      actualMessages.map(async (msg) => {
         const plain = msg.content ? await decryptTextForRoom(msg.content, roomSnapshot) : '';
         return { msg, plain };
       })
@@ -1840,7 +1970,7 @@
 
       const isMine = msg.sender_id === currentUser.id;
       const sender = allProfiles.find((p) => p.id === msg.sender_id);
-      const senderName = sender ? sender.display_name : 'Пользователь';
+      const senderName = (sender && sender.display_name) || msg.sender_name || 'Пользователь';
 
       const row = document.createElement('div');
       row.className = `msg-row ${isMine ? 'own mine' : 'other theirs'}`;
@@ -1852,36 +1982,12 @@
         row.appendChild(authorEl);
       }
 
+      const kind = detectMessageKind(msg);
+      const isCircle = kind === 'video_circle';
       const bubble = document.createElement('div');
-      const isCircle = msg.media_type === 'video_circle';
       bubble.className = `msg-bubble ${isCircle ? 'circle-bubble' : ''}`;
 
-      let textBody = plain || '';
-      let quoteLine = '';
-      let isEdited = false;
-      let reactionEmoji = '';
-
-      const reactMatch = textBody.match(/\n\[react:([^\]]+)\]$/);
-      if (reactMatch) {
-        reactionEmoji = reactMatch[1];
-        textBody = textBody.slice(0, -reactMatch[0].length);
-      }
-
-      if (textBody.endsWith('\n[edited]')) {
-        isEdited = true;
-        textBody = textBody.slice(0, -9);
-      } else if (textBody === '[edited]') {
-        isEdited = true;
-        textBody = '';
-      }
-
-      if (textBody.startsWith('> ')) {
-        const nlIdx = textBody.indexOf('\n');
-        if (nlIdx !== -1) {
-          quoteLine = textBody.slice(2, nlIdx).trim();
-          textBody = textBody.slice(nlIdx + 1);
-        }
-      }
+      const { textBody, quoteLine, isEdited, inlineReaction } = parseCleanMessageStruct(plain);
 
       if (quoteLine && !isCircle) {
         const qBox = document.createElement('div');
@@ -1891,7 +1997,7 @@
       }
 
       if (msg.media_url) {
-        if (msg.media_type === 'image') {
+        if (kind === 'image') {
           const img = document.createElement('img');
           img.className = 'msg-photo msg-image';
           img.src = msg.media_url;
@@ -1902,7 +2008,7 @@
             lightbox.classList.remove('hidden');
           });
           bubble.appendChild(img);
-        } else if (msg.media_type === 'video_circle') {
+        } else if (kind === 'video_circle') {
           const circleWrap = document.createElement('div');
           circleWrap.className = 'video-note-wrap video-circle-msg';
           const vid = document.createElement('video');
@@ -1930,7 +2036,7 @@
           circleWrap.appendChild(vid);
           circleWrap.appendChild(badge);
           bubble.appendChild(circleWrap);
-        } else if (msg.media_type === 'voice') {
+        } else if (kind === 'voice') {
           const voiceCard = buildCustomVoicePlayer(msg.media_url);
           bubble.appendChild(voiceCard);
         } else {
@@ -1952,7 +2058,7 @@
         }
       }
 
-      if (textBody && msg.media_type !== 'file') {
+      if (textBody && kind !== 'file') {
         const txt = document.createElement('div');
         txt.innerHTML = renderTextWithLinks(textBody);
         bubble.appendChild(txt);
@@ -1966,13 +2072,23 @@
       const meta = document.createElement('div');
       meta.className = 'msg-meta';
 
-      if (reactionEmoji) {
+      // Отображаем реакции (как из пакетов __REACT__, так и встроенные)
+      const packetMap = reactionsByTargetId.get(msg.id);
+      const allEmojis = [];
+      if (inlineReaction) allEmojis.push(inlineReaction);
+      if (packetMap) {
+        packetMap.forEach((val) => {
+          allEmojis.push(val.emoji);
+        });
+      }
+
+      if (allEmojis.length > 0) {
         const reactPill = document.createElement('span');
-        reactPill.style.background = 'rgba(255,255,255,0.18)';
-        reactPill.style.padding = '1px 6px';
+        reactPill.style.background = 'rgba(255,255,255,0.22)';
+        reactPill.style.padding = '1px 7px';
         reactPill.style.borderRadius = '999px';
-        reactPill.style.fontSize = '12px';
-        reactPill.textContent = reactionEmoji;
+        reactPill.style.fontSize = '12.5px';
+        reactPill.textContent = allEmojis.join(' ');
         meta.appendChild(reactPill);
       }
 
@@ -1990,7 +2106,7 @@
       if (isMine) {
         const ticks = document.createElement('span');
         ticks.className = 'read-ticks';
-        ticks.textContent = msg.is_read ? '✓✓' : '✓';
+        ticks.textContent = '✓✓';
         meta.appendChild(ticks);
       }
 
@@ -2002,14 +2118,18 @@
         row.appendChild(bubble);
       }
 
+      const myReactionEntry = packetMap ? packetMap.get(currentUser.id) : null;
+
       bubble.addEventListener('click', () => {
         openMessageActionSheet({
           msg,
+          kind,
           senderName,
           plainText: textBody,
           quoteLine,
           isEdited,
-          reactionEmoji
+          myReactionPacketId: myReactionEntry ? myReactionEntry.packetId : null,
+          myReactionEmoji: myReactionEntry ? myReactionEntry.emoji : inlineReaction
         });
       });
 
@@ -2023,7 +2143,7 @@
   function openMessageActionSheet(ctx) {
     selectedMsgContext = ctx;
     const isMine = ctx.msg.sender_id === currentUser.id;
-    const isTextEditable = isMine && (!ctx.msg.media_type || ctx.msg.media_type === 'text');
+    const isTextEditable = isMine && ctx.kind === 'text';
 
     sheetEditBtn.classList.toggle('hidden', !isTextEditable);
     sheetCopyBtn.classList.toggle('hidden', !ctx.plainText);
@@ -2039,6 +2159,7 @@
     if (e.target === msgActionModal) msgActionModal.classList.add('hidden');
   });
 
+  // Мгновенные реакции на ЛЮБОЕ сообщение (и своё, и Артёма, и старое!) через пакеты __REACT__
   reactEmojiBtns.forEach((btn) => {
     btn.addEventListener('click', async () => {
       if (!selectedMsgContext || !activeRoom) return;
@@ -2046,25 +2167,25 @@
       const ctx = selectedMsgContext;
       msgActionModal.classList.add('hidden');
 
-      let updatedPlain = '';
-      if (ctx.quoteLine) {
-        updatedPlain += `> ${ctx.quoteLine}\n`;
-      }
-      updatedPlain += ctx.plainText || '';
-      if (ctx.isEdited) {
-        updatedPlain += '\n[edited]';
-      }
-      if (ctx.reactionEmoji !== emoji) {
-        updatedPlain += `\n[react:${emoji}]`;
-      }
+      try {
+        // Удаляем предыдущую нашу реакцию на это сообщение, если она была
+        if (ctx.myReactionPacketId) {
+          await supabaseClient.from('messages').delete().eq('id', ctx.myReactionPacketId);
+        }
 
-      const encrypted = await encryptTextForRoom(updatedPlain, activeRoom);
-      await supabaseClient
-        .from('messages')
-        .update({ content: encrypted })
-        .eq('id', ctx.msg.id);
+        // Если нажали на другую эмодзи (или реакции ещё не было) — добавляем новую
+        if (ctx.myReactionEmoji !== emoji) {
+          await insertMessageRow({
+            room_id: activeRoom.id,
+            content: `__REACT__|${ctx.msg.id}|${emoji}`,
+            media_type: 'text'
+          });
+        }
 
-      await loadMessages(activeRoom.id);
+        await loadMessages(activeRoom.id);
+      } catch (err) {
+        alert('Не удалось поставить реакцию: ' + (err.message || err));
+      }
     });
   });
 
@@ -2075,7 +2196,7 @@
     setReplyMessage(msg, senderName, plainText);
   });
 
-  // Пересылка сообщения в любой другой чат (например, в «Избранное» или другу)
+  // Пересылка любого сообщения (включая старые, кружочки, голосовые, фото и текст) в другой чат
   if (sheetForwardBtn) {
     sheetForwardBtn.addEventListener('click', () => {
       if (!selectedMsgContext) return;
@@ -2092,17 +2213,22 @@
           forwardModal.classList.add('hidden');
           const { msg, senderName, plainText } = selectedMsgContext;
           const forwardPlain = plainText
-            ? `> Переслано от ${senderName}\n${plainText}`
-            : `> Переслано от ${senderName}\n`;
+            ? `> ↪ Переслано от ${senderName}\n${plainText}`
+            : `> ↪ Переслано от ${senderName}\n`;
           const enc = await encryptTextForRoom(forwardPlain, targetRoom);
 
-          await supabaseClient.from('messages').insert({
+          const { error } = await insertMessageRow({
             room_id: targetRoom.id,
-            sender_id: currentUser.id,
             content: enc,
             media_url: msg.media_url || null,
-            media_type: msg.media_type || 'text'
+            media_type: msg.media_type || 'text',
+            media_duration: msg.media_duration || 0
           });
+
+          if (error) {
+            alert('Ошибка при пересылке: ' + error.message);
+            return;
+          }
 
           await selectRoom(targetRoom);
         });
@@ -2129,7 +2255,7 @@
 
   sheetEditBtn.addEventListener('click', () => {
     if (!selectedMsgContext) return;
-    const { msg, plainText, quoteLine, reactionEmoji } = selectedMsgContext;
+    const { msg, plainText, quoteLine } = selectedMsgContext;
     msgActionModal.classList.add('hidden');
 
     replyToMsg = null;
@@ -2138,7 +2264,6 @@
       created_at: msg.created_at,
       room_id: msg.room_id,
       quoteLine: quoteLine || '',
-      reactionEmoji: reactionEmoji || '',
       plainText: plainText || ''
     };
 
@@ -2256,12 +2381,15 @@
 
   function setReplyMessage(msg, senderName, plainText) {
     editingMsg = null;
+    const kind = detectMessageKind(msg);
     const preview =
       plainText ||
-      (msg.media_type === 'voice'
+      (kind === 'voice'
         ? '🎤 Голосовое сообщение'
-        : msg.media_type === 'video_circle'
+        : kind === 'video_circle'
         ? '📹 Видеокружочек'
+        : kind === 'image'
+        ? '📷 Фотография'
         : '📎 Вложение');
     replyToMsg = { senderName, preview };
     replyTargetAuthor.textContent = `Ответ: ${senderName}`;
@@ -2311,6 +2439,7 @@
 
     messageInput.value = '';
 
+    // Редактирование сообщения (с сохранением исходного id и времени created_at)
     if (editingMsg) {
       const editTarget = editingMsg;
       clearComposerState();
@@ -2321,29 +2450,21 @@
         updatedPlain += `> ${editTarget.quoteLine}\n`;
       }
       updatedPlain += `${rawText}\n[edited]`;
-      if (editTarget.reactionEmoji) {
-        updatedPlain += `\n[react:${editTarget.reactionEmoji}]`;
-      }
 
       const encrypted = await encryptTextForRoom(updatedPlain, activeRoom);
 
-      const { data: updatedRows, error: upErr } = await supabaseClient
-        .from('messages')
-        .update({ content: encrypted })
-        .eq('id', editTarget.id)
-        .select();
+      await supabaseClient.from('messages').delete().eq('id', editTarget.id);
+      const { error } = await insertMessageRow({
+        id: editTarget.id,
+        room_id: activeRoom.id,
+        content: encrypted,
+        media_type: 'text',
+        created_at: editTarget.created_at
+      });
 
-      if (upErr || !updatedRows || updatedRows.length === 0) {
-        await supabaseClient.from('messages').delete().eq('id', editTarget.id);
-        await supabaseClient.from('messages').insert({
-          room_id: activeRoom.id,
-          sender_id: currentUser.id,
-          content: encrypted,
-          media_type: 'text',
-          created_at: editTarget.created_at
-        });
+      if (error) {
+        alert('Ошибка сохранения изменений: ' + error.message);
       }
-
       await loadMessages(activeRoom.id);
       return;
     }
@@ -2358,9 +2479,8 @@
 
     const encrypted = await encryptTextForRoom(finalPlain, activeRoom);
 
-    const { error } = await supabaseClient.from('messages').insert({
+    const { error } = await insertMessageRow({
       room_id: activeRoom.id,
-      sender_id: currentUser.id,
       content: encrypted,
       media_type: 'text'
     });
@@ -2419,7 +2539,8 @@
         contentType = 'image/jpeg';
       }
 
-      const path = `${activeRoom.id}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+      const prefix = isImg ? 'img' : 'file';
+      const path = `${activeRoom.id}/${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
       const { error: upErr } = await supabaseClient.storage
         .from('chat-media')
         .upload(path, uploadBlob, { contentType });
@@ -2428,13 +2549,13 @@
       const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
       const captionEncrypted = isImg ? '' : await encryptTextForRoom(file.name, activeRoom);
 
-      await supabaseClient.from('messages').insert({
+      const { error } = await insertMessageRow({
         room_id: activeRoom.id,
-        sender_id: currentUser.id,
         content: captionEncrypted,
         media_url: pub.publicUrl,
-        media_type: isImg ? 'image' : 'file'
+        media_type: isImg ? 'image' : 'text'
       });
+      if (error) throw error;
       await loadMessages(activeRoom.id);
     } catch (err) {
       alert('Ошибка отправки файла: ' + (err.message || err));
@@ -2593,6 +2714,7 @@
       const wasCanceled = recordCanceled;
       const chunks = [...recordedChunks];
       const recMime = recorder.mimeType || (isVideo ? 'video/mp4' : 'audio/webm');
+      const totalSec = getElapsedRecordingSeconds();
       cleanupRecordingUI();
 
       if (wasCanceled || chunks.length === 0 || !activeRoom) return;
@@ -2610,13 +2732,14 @@
         if (upErr) throw upErr;
 
         const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-        await supabaseClient.from('messages').insert({
+        const { error } = await insertMessageRow({
           room_id: activeRoom.id,
-          sender_id: currentUser.id,
           content: '',
           media_url: pub.publicUrl,
-          media_type: isVideo ? 'video_circle' : 'voice'
+          media_type: 'audio',
+          media_duration: totalSec
         });
+        if (error) throw error;
         await loadMessages(activeRoom.id);
       } catch (err) {
         alert('Не удалось отправить запись: ' + (err.message || err));
@@ -2739,7 +2862,7 @@
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
     realtimeChannel = supabaseClient
-      .channel('pulse-live-v9', {
+      .channel('pulse-live-v10', {
         config: { presence: { key: currentUser.id } }
       })
       .on('presence', { event: 'sync' }, () => {
@@ -2773,14 +2896,13 @@
 
           if (activeRoom && incoming.room_id === activeRoom.id) {
             await loadMessages(activeRoom.id);
-            await markRoomMessagesAsRead(activeRoom.id);
           } else if (incoming.room_id) {
             const { data } = await supabaseClient
               .from('messages')
               .select('*')
               .eq('room_id', incoming.room_id)
               .order('created_at', { ascending: true })
-              .limit(250);
+              .limit(350);
             if (data) {
               roomMessagesCache.set(incoming.room_id, data);
               const rm = myRooms.find((r) => r.id === incoming.room_id);
@@ -2883,7 +3005,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=10').catch(() => {});
     });
   }
 

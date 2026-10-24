@@ -1,16 +1,16 @@
-const CACHE_NAME = 'pulse-pwa-v9';
+const CACHE_NAME = 'pulse-pwa-v10';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css',
+  './styles.css?v=10',
   './config.js',
-  './app.js',
+  './app.js?v=10',
   './manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).catch(() => {})
   );
   self.skipWaiting();
 });
@@ -27,7 +27,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'no-store' })
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
