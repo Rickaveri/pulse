@@ -191,16 +191,29 @@
   let holdTimer = null;
   let pointerStartY = 0;
 
-  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ОТСТУПА НА IPHONE (VisualViewport Sync)
+  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПРИВЯЗКИ К САМОМУ НИЗУ ЭКРАНА НА IPHONE
   function syncViewportHeight() {
     const vv = window.visualViewport;
+    const fullH = window.screen ? window.screen.height : window.innerHeight;
     const h = vv ? vv.height : window.innerHeight;
-    document.documentElement.style.setProperty('--app-height', `${Math.round(h)}px`);
+    const isKeyboardOpen = vv ? (window.innerHeight - vv.height > 110 || fullH - vv.height > 260) : false;
 
-    const isKeyboardOpen = vv ? (window.innerHeight - vv.height > 110) : false;
     document.body.classList.toggle('keyboard-open', isKeyboardOpen);
 
-    // Сбрасываем фантомный скролл WebKit на iOS
+    if (appShell) {
+      if (isKeyboardOpen && vv) {
+        // Когда открыта клавиатура — прижимаем нижнюю панель ровно к верху клавиатуры
+        appShell.style.bottom = 'auto';
+        appShell.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
+        appShell.style.height = `${Math.round(h)}px`;
+      } else {
+        // Когда клавиатура закрыта — растягиваем строго до самого низа экрана (bottom: 0)
+        appShell.style.top = '0px';
+        appShell.style.bottom = '0px';
+        appShell.style.height = '';
+      }
+    }
+
     if (window.scrollY !== 0 || window.scrollX !== 0) {
       window.scrollTo(0, 0);
     }

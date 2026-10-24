@@ -381,15 +381,16 @@ input, textarea {
   transform: translateX(19px);
 }
 
-/* Основной макет с точной фиксацией высоты под клавиатуру iPhone */
+/* Основной макет: растянут строго от верха до самого низа экрана iPhone (bottom: 0) */
 .app-shell {
   display: flex;
   width: 100vw;
-  height: var(--app-height, 100dvh);
-  overflow: hidden;
   position: fixed;
   top: 0;
   left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -1078,9 +1079,9 @@ input, textarea {
   flex-shrink: 0;
 }
 
-/* Нижняя панель ввода (без фантомного отступа при открытой клавиатуре) */
+/* Нижняя панель ввода — прижата вплотную к самому низу экрана */
 .composer {
-  padding: 8px 12px calc(8px + var(--safe-bottom));
+  padding: 6px 12px 8px;
   background: var(--bg-sidebar);
   border-top: 1px solid var(--border);
   display: flex;
@@ -1091,7 +1092,7 @@ input, textarea {
 }
 
 body.keyboard-open .composer {
-  padding-bottom: 8px;
+  padding-bottom: 6px;
 }
 
 .composer-input {
