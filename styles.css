@@ -792,6 +792,10 @@ input, textarea {
   font-weight: 600;
 }
 
+.chat-item-sub.draft {
+  color: #f87171 !important;
+}
+
 .unread-badge {
   background: var(--accent-gradient);
   color: #fff;
@@ -859,6 +863,7 @@ input, textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   flex-shrink: 0;
   z-index: 20;
 }
@@ -868,8 +873,16 @@ input, textarea {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
   cursor: pointer;
   padding: 6px 0;
+}
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .mobile-back {
@@ -916,6 +929,51 @@ input, textarea {
   cursor: pointer;
   border: 1px solid rgba(16, 185, 129, 0.28);
   flex-shrink: 0;
+}
+
+/* Полоса поиска внутри текущего диалога */
+.chat-search-bar {
+  padding: 8px 14px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Полоса закреплённого сообщения под шапкой чата */
+.pinned-msg-bar {
+  padding: 7px 14px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pinned-msg-content {
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pinned-msg-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.pinned-msg-text {
+  font-size: 12.5px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .messages-viewport {
@@ -967,6 +1025,7 @@ input, textarea {
   display: flex;
   flex-direction: column;
   max-width: 78%;
+  transition: background 0.3s;
 }
 
 .msg-row.own,
@@ -997,7 +1056,11 @@ input, textarea {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
   position: relative;
   cursor: pointer;
-  transition: transform 0.1s;
+  transition: transform 0.1s, box-shadow 0.25s;
+}
+
+.msg-bubble.highlight-flash {
+  box-shadow: 0 0 0 3px var(--accent), 0 8px 25px rgba(99, 102, 241, 0.45) !important;
 }
 
 .msg-bubble:active {
@@ -1160,12 +1223,12 @@ input, textarea {
   opacity: 0.8;
 }
 
-/* Кастомный аудиоплеер голосовых */
+/* Кастомный аудиоплеер голосовых с кнопкой скорости 1x / 1.5x / 2x */
 .voice-player {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 210px;
+  gap: 8px;
+  min-width: 225px;
   padding: 2px 0;
 }
 
@@ -1223,8 +1286,20 @@ input, textarea {
 .voice-duration {
   font-size: 11.5px;
   opacity: 0.85;
-  min-width: 30px;
+  min-width: 28px;
   text-align: right;
+}
+
+.voice-speed-btn {
+  background: rgba(255, 255, 255, 0.18);
+  border: none;
+  color: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 3px 6px;
+  border-radius: 999px;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 .msg-meta {
@@ -1257,7 +1332,7 @@ input, textarea {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 11px 14px;
   border: none;
   background: transparent;
   color: var(--text-main);
