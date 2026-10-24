@@ -191,26 +191,38 @@
   let holdTimer = null;
   let pointerStartY = 0;
 
-  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПРИВЯЗКИ К САМОМУ НИЗУ ЭКРАНА НА IPHONE
+  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА В ВЕБ-ПРИЛОЖЕНИИ НА IPHONE
   function syncViewportHeight() {
     const vv = window.visualViewport;
-    const fullH = window.screen ? window.screen.height : window.innerHeight;
-    const h = vv ? vv.height : window.innerHeight;
-    const isKeyboardOpen = vv ? (window.innerHeight - vv.height > 110 || fullH - vv.height > 260) : false;
+    const screenH = window.screen ? window.screen.height : window.innerHeight;
+    const innerH = window.innerHeight;
+    const vvH = vv ? vv.height : innerH;
 
+    // В режиме иконки «На экран Домой» (standalone) iOS уменьшает innerHeight на 34px.
+    // Поэтому при закрытой клавиатуре берём полную физическую высоту экрана screen.height!
+    const isStandalone = window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+    const isPortrait = innerH >= window.innerWidth;
+    const fullPhysicalH = (isStandalone && isPortrait && screenH > innerH && (screenH - innerH <= 90))
+      ? screenH
+      : innerH;
+
+    const isKeyboardOpen = vv ? (innerH - vvH > 100) : false;
     document.body.classList.toggle('keyboard-open', isKeyboardOpen);
 
     if (appShell) {
       if (isKeyboardOpen && vv) {
-        // Когда открыта клавиатура — прижимаем нижнюю панель ровно к верху клавиатуры
+        document.documentElement.style.height = `${Math.round(vvH)}px`;
+        document.body.style.height = `${Math.round(vvH)}px`;
         appShell.style.bottom = 'auto';
         appShell.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
-        appShell.style.height = `${Math.round(h)}px`;
+        appShell.style.height = `${Math.round(vvH)}px`;
       } else {
-        // Когда клавиатура закрыта — растягиваем строго до самого низа экрана (bottom: 0)
+        document.documentElement.style.height = `${fullPhysicalH}px`;
+        document.body.style.height = `${fullPhysicalH}px`;
         appShell.style.top = '0px';
-        appShell.style.bottom = '0px';
-        appShell.style.height = '';
+        appShell.style.bottom = 'auto';
+        appShell.style.height = `${fullPhysicalH}px`;
       }
     }
 
@@ -1805,17 +1817,44 @@
   smartActionBtn.addEventListener('pointerup', handlePointerRelease);
   smartActionBtn.addEventListener('pointercancel', handlePointerRelease);
 
+  // Кэшируем потоки микрофона и камеры на всю сессию, чтобы браузер НЕ спрашивал разрешение каждый раз!
+  let cachedAudioStream = null;
+  let cachedVideoStream = null;
+  let cachedVideoFacing = null;
+
+  function isStreamAlive(stream) {
+    return stream && stream.getTracks().length > 0 && stream.getTracks().every((t) => t.readyState === 'live');
+  }
+
+  async function getOrInitAudioStream() {
+    if (isStreamAlive(cachedAudioStream)) {
+      cachedAudioStream.getTracks().forEach((t) => { t.enabled = true; });
+      return cachedAudioStream;
+    }
+    cachedAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return cachedAudioStream;
+  }
+
   async function openCameraStream(facing) {
-    return await navigator.mediaDevices.getUserMedia({
+    if (isStreamAlive(cachedVideoStream) && cachedVideoFacing === facing) {
+      cachedVideoStream.getTracks().forEach((t) => { t.enabled = true; });
+      return cachedVideoStream;
+    }
+    if (cachedVideoStream) {
+      cachedVideoStream.getTracks().forEach((t) => t.stop());
+    }
+    cachedVideoStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: facing, width: { ideal: 480 }, height: { ideal: 480 } },
       audio: true
     });
+    cachedVideoFacing = facing;
+    return cachedVideoStream;
   }
 
   async function startSmartRecording(mode) {
     if (isRecording || !activeRoom) return;
     isRecording = true;
-    isRecordingLocked = mode === 'video'; // Видеокружочек сразу управляемый кнопками (Камера, Пауза, Отмена, Отправить)
+    isRecordingLocked = mode === 'video';
     isRecordingPaused = false;
     recordCanceled = false;
     recordedChunks = [];
@@ -1833,7 +1872,7 @@
           ? new MediaRecorder(activeMediaStream, { mimeType: mime })
           : new MediaRecorder(activeMediaStream);
       } else {
-        activeMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        activeMediaStream = await getOrInitAudioStream();
         const mime = getSupportedAudioMime();
         activeMediaRecorder = mime
           ? new MediaRecorder(activeMediaStream, { mimeType: mime })
@@ -1888,13 +1927,13 @@
     };
 
     activeMediaRecorder.onstop = async () => {
-      // Если идёт смена камеры на лету, не завершаем запись
       if (activeMediaRecorder && activeMediaRecorder._switchingCamera) return;
 
       clearInterval(recordTimerInterval);
+      // НЕ вызываем t.stop(), а просто выключаем передачу звука/видео (t.enabled = false),
+      // чтобы iOS НЕ сбрасывала разрешение и не спрашивала его заново перед каждым сообщением!
       if (activeMediaStream) {
-        activeMediaStream.getTracks().forEach((t) => t.stop());
-        activeMediaStream = null;
+        activeMediaStream.getTracks().forEach((t) => { t.enabled = false; });
       }
 
       const wasCanceled = recordCanceled;
