@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=16" />
+  <link rel="stylesheet" href="./styles.css?v=17" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=16"></script>
+  <script src="./config.js?v=17"></script>
 </head>
 <body>
 
@@ -155,6 +155,21 @@
           <button type="button" class="theme-pill" data-set-theme="system">Авто (Система)</button>
           <button type="button" class="theme-pill" data-set-theme="midnight">Тёмная</button>
           <button type="button" class="theme-pill" data-set-theme="daylight">Светлая</button>
+        </div>
+        <div class="settings-section-title" style="margin-top:10px;">Цветовой акцент</div>
+        <div id="accentPills" class="accent-swatches-row">
+          <button type="button" class="accent-swatch active" data-set-accent="indigo" style="background:linear-gradient(135deg,#6366f1,#4f46e5);">Индиго</button>
+          <button type="button" class="accent-swatch" data-set-accent="ocean" style="background:linear-gradient(135deg,#0ea5e9,#2563eb);">Океан</button>
+          <button type="button" class="accent-swatch" data-set-accent="emerald" style="background:linear-gradient(135deg,#10b981,#059669);">Изумруд</button>
+          <button type="button" class="accent-swatch" data-set-accent="violet" style="background:linear-gradient(135deg,#a855f7,#7e22ce);">Аметист</button>
+          <button type="button" class="accent-swatch" data-set-accent="sunset" style="background:linear-gradient(135deg,#f43f5e,#e11d48);">Закат</button>
+        </div>
+        <div class="settings-section-title" style="margin-top:10px;">Обои переписки</div>
+        <div id="wallpaperPills" class="theme-pills">
+          <button type="button" class="theme-pill active" data-set-wallpaper="aurora">Сияние</button>
+          <button type="button" class="theme-pill" data-set-wallpaper="dots">Матрица</button>
+          <button type="button" class="theme-pill" data-set-wallpaper="stars">Космос</button>
+          <button type="button" class="theme-pill" data-set-wallpaper="clean">Чистый</button>
         </div>
 
         <div class="settings-row">
@@ -467,6 +482,7 @@
         <button type="button" class="chat-filter-tab" data-chat-filter="unread">Непрочитанные <span id="filterUnreadCount" class="filter-tab-badge hidden">0</span></button>
         <button type="button" class="chat-filter-tab" data-chat-filter="dm">Личные</button>
         <button type="button" class="chat-filter-tab" data-chat-filter="group">Группы</button>
+        <button type="button" id="markAllReadBtn" class="chat-filter-tab hidden" title="Отметить все чаты прочитанными">✓✓</button>
       </div>
 
       <div id="chatList" class="chat-list"></div>
@@ -570,6 +586,7 @@
             <button type="button" class="emoji-quick-item" data-insert-emoji="🙏">🙏</button>
             <button type="button" class="emoji-quick-item" data-insert-emoji="💯">💯</button>
           </div>
+          <button id="createPollBtn" class="dictate-pill-btn" type="button" title="Создать опрос в чате">📊 Опрос</button>
           <button id="voiceDictateBtn" class="dictate-pill-btn" type="button" title="Голосовой ввод текста">🎙️ Диктовка</button>
         </div>
 
@@ -624,6 +641,27 @@
   <!-- Индикатор состояния интернет-соединения (v16) -->
   <div id="networkStatusBanner" class="network-status-banner hidden">⚠️ Ожидание сети... Проверьте подключение</div>
 
-  <script src="./app.js?v=16"></script>
+  <!-- Модальное окно создания опроса в чате (v17) -->
+  <div id="pollModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:370px;">
+      <h2 style="font-size:18px; margin-bottom:6px;">📊 Создать опрос</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:12px;">Участники чата смогут голосовать прямо в переписке.</p>
+      <div class="field-group">
+        <label for="pollQuestionInput">Вопрос голосования</label>
+        <input id="pollQuestionInput" class="input-field" type="text" placeholder="Например: Во сколько сегодня созвон?" autocomplete="off" />
+      </div>
+      <div class="field-group">
+        <label>Варианты ответа (минимум 2)</label>
+        <input id="pollOpt1" class="input-field" type="text" placeholder="Вариант 1" style="margin-bottom:6px;" autocomplete="off" />
+        <input id="pollOpt2" class="input-field" type="text" placeholder="Вариант 2" style="margin-bottom:6px;" autocomplete="off" />
+        <input id="pollOpt3" class="input-field" type="text" placeholder="Вариант 3 (необязательно)" style="margin-bottom:6px;" autocomplete="off" />
+        <input id="pollOpt4" class="input-field" type="text" placeholder="Вариант 4 (необязательно)" autocomplete="off" />
+      </div>
+      <button id="sendPollConfirmBtn" class="btn-primary" type="button">Отправить опрос</button>
+      <button id="cancelPollModalBtn" class="btn-ghost" type="button">Отмена</button>
+    </div>
+  </div>
+
+  <script src="./app.js?v=17"></script>
 </body>
 </html>

@@ -4696,9 +4696,232 @@
     });
   }
 
+  // =========================================================================
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v17:
+  // 1) Кастомизация дизайна: 5 акцентных тем + 4 варианта обоев переписки
+  // 2) Мгновенная вставка скриншотов и фото из буфера обмена (Cmd+V / Ctrl+V)
+  // 3) Интерактивные опросы и голосования прямо в чатах (📊 Опрос)
+  // 4) Кнопка «✓✓ Прочитать всё» в панели фильтров
+  // 5) Плавная 60/120 FPS оптимизация через requestAnimationFrame
+  // =========================================================================
+  const accentBtns = Array.from(document.querySelectorAll('[data-set-accent]'));
+  const wallpaperBtns = Array.from(document.querySelectorAll('[data-set-wallpaper]'));
+  const markAllReadBtn = document.getElementById('markAllReadBtn');
+  const createPollBtn = document.getElementById('createPollBtn');
+  const pollModal = document.getElementById('pollModal');
+  const pollQuestionInput = document.getElementById('pollQuestionInput');
+  const pollOpt1 = document.getElementById('pollOpt1');
+  const pollOpt2 = document.getElementById('pollOpt2');
+  const pollOpt3 = document.getElementById('pollOpt3');
+  const pollOpt4 = document.getElementById('pollOpt4');
+  const sendPollConfirmBtn = document.getElementById('sendPollConfirmBtn');
+  const cancelPollModalBtn = document.getElementById('cancelPollModalBtn');
+
+  // 1. Применение цветовых акцентов и обоев переписки
+  function applySavedVisualAppearance() {
+    const savedAccent = localStorage.getItem('pulse_accent') || 'indigo';
+    const savedWallpaper = localStorage.getItem('pulse_wallpaper') || 'aurora';
+    document.documentElement.setAttribute('data-accent', savedAccent);
+    document.documentElement.setAttribute('data-wallpaper', savedWallpaper);
+    accentBtns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-set-accent') === savedAccent));
+    wallpaperBtns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-set-wallpaper') === savedWallpaper));
+  }
+
+  accentBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const acc = btn.getAttribute('data-set-accent') || 'indigo';
+      localStorage.setItem('pulse_accent', acc);
+      applySavedVisualAppearance();
+    });
+  });
+
+  wallpaperBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const wp = btn.getAttribute('data-set-wallpaper') || 'aurora';
+      localStorage.setItem('pulse_wallpaper', wp);
+      applySavedVisualAppearance();
+    });
+  });
+
+  applySavedVisualAppearance();
+
+  // 2. Вставка скриншотов и изображений из буфера обмена (Cmd+V / Ctrl+V)
+  window.addEventListener('paste', (e) => {
+    if (!activeRoom || !e.clipboardData || !e.clipboardData.items) return;
+    const items = Array.from(e.clipboardData.items);
+    const imgItem = items.find((it) => it.type && it.type.startsWith('image/'));
+    if (!imgItem) return;
+    const blob = imgItem.getAsFile();
+    if (!blob || !attachmentInput) return;
+    e.preventDefault();
+    triggerHaptic('medium');
+    try {
+      const dt = new DataTransfer();
+      const file = new File([blob], `screenshot_${Date.now()}.png`, { type: blob.type || 'image/png' });
+      dt.items.add(file);
+      attachmentInput.files = dt.files;
+      attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (err) {}
+  });
+
+  // 3. Создание и рендер интерактивных опросов (📊 Опрос)
+  if (createPollBtn && pollModal) {
+    createPollBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      if (emojiDrawer) emojiDrawer.classList.add('hidden');
+      if (pollQuestionInput) pollQuestionInput.value = '';
+      if (pollOpt1) pollOpt1.value = '';
+      if (pollOpt2) pollOpt2.value = '';
+      if (pollOpt3) pollOpt3.value = '';
+      if (pollOpt4) pollOpt4.value = '';
+      pollModal.classList.remove('hidden');
+      setTimeout(() => { if (pollQuestionInput) pollQuestionInput.focus(); }, 60);
+    });
+
+    if (cancelPollModalBtn) {
+      cancelPollModalBtn.addEventListener('click', () => pollModal.classList.add('hidden'));
+    }
+
+    if (sendPollConfirmBtn && messageInput && smartActionBtn) {
+      sendPollConfirmBtn.addEventListener('click', () => {
+        const q = (pollQuestionInput ? pollQuestionInput.value : '').trim();
+        const opts = [pollOpt1, pollOpt2, pollOpt3, pollOpt4]
+          .map((el) => (el ? el.value.trim() : ''))
+          .filter(Boolean);
+        if (!q || opts.length < 2) {
+          alert('Введите вопрос и минимум 2 варианта ответа');
+          return;
+        }
+        triggerHaptic('medium');
+        pollModal.classList.add('hidden');
+        const pollText = `📊 ОПРОС: ${q}\n` + opts.map((o, idx) => `[${idx + 1}] ${o}`).join('\n');
+        messageInput.value = pollText;
+        messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        smartActionBtn.click();
+      });
+    }
+  }
+
+  function renderInteractivePollsInChat() {
+    if (!messagesViewport) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-bubble')).forEach((bubble) => {
+      if (bubble.dataset.pollRendered) return;
+      const rawText = bubble.textContent || '';
+      if (!rawText.includes('📊 ОПРОС:')) return;
+      bubble.dataset.pollRendered = '1';
+
+      const metaEl = bubble.querySelector('.msg-meta');
+      const clone = bubble.cloneNode(true);
+      const cMeta = clone.querySelector('.msg-meta');
+      if (cMeta) cMeta.remove();
+      clone.querySelectorAll('.reaction-chip-pill').forEach((r) => r.remove());
+
+      const lines = clone.textContent.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+      const headerLine = lines.find((l) => l.startsWith('📊 ОПРОС:'));
+      if (!headerLine) return;
+      const question = headerLine.replace('📊 ОПРОС:', '').trim();
+      const optLines = lines
+        .filter((l) => /^\[\d+\]\s+/.test(l))
+        .map((l) => l.replace(/^\[\d+\]\s+/, '').trim());
+      if (optLines.length < 2) return;
+
+      const pollKey = `pulse_poll_vote_${question.slice(0, 32)}`;
+      const card = document.createElement('div');
+      card.className = 'poll-card';
+
+      const updatePollUI = () => {
+        const myVoteIdx = localStorage.getItem(pollKey);
+        const hasVoted = myVoteIdx !== null;
+        card.innerHTML = `
+          <div class="poll-badge">📊 Голосование в чате</div>
+          <div class="poll-question"></div>
+          <div class="poll-options-list"></div>
+          <div class="poll-footer-meta">${hasVoted ? 'Вы проголосовали • Нажмите для смены' : 'Нажмите на вариант, чтобы проголосовать'}</div>
+        `;
+        card.querySelector('.poll-question').textContent = question;
+        const listEl = card.querySelector('.poll-options-list');
+
+        optLines.forEach((optText, idx) => {
+          const isSelected = String(idx) === myVoteIdx;
+          const pct = hasVoted ? (isSelected ? 100 : 0) : 0;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'poll-option-btn' + (isSelected ? ' voted' : '');
+          btn.innerHTML = `
+            <div class="poll-option-bar" style="width:${pct}%;"></div>
+            <div class="poll-option-row">
+              <span class="poll-opt-label"></span>
+              <span class="poll-option-pct">${hasVoted ? pct + '%' : ''}</span>
+            </div>
+          `;
+          btn.querySelector('.poll-opt-label').textContent = (isSelected ? '✓ ' : '') + optText;
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            triggerHaptic('light');
+            localStorage.setItem(pollKey, String(idx));
+            updatePollUI();
+          });
+          listEl.appendChild(btn);
+        });
+      };
+
+      updatePollUI();
+      bubble.innerHTML = '';
+      bubble.appendChild(card);
+      if (metaEl) bubble.appendChild(metaEl);
+    });
+  }
+
+  // 4. Кнопка «✓✓ Прочитать всё» для быстрого сброса всех счётчиков непрочитанных
+  function syncMarkAllReadVisibility() {
+    if (!markAllReadBtn) return;
+    let total = 0;
+    unreadCounts.forEach((cnt) => { total += cnt; });
+    markAllReadBtn.classList.toggle('hidden', total === 0);
+  }
+
+  if (markAllReadBtn) {
+    markAllReadBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      triggerHaptic('medium');
+      const now = Date.now();
+      myRooms.forEach((r) => setLastReadTimestamp(r.id, now));
+      unreadCounts.clear();
+      updateAppIconBadge();
+      if (chatList) {
+        Array.from(chatList.querySelectorAll('.unread-badge')).forEach((b) => b.remove());
+      }
+      syncMarkAllReadVisibility();
+      if (filterUnreadCount) filterUnreadCount.classList.add('hidden');
+    });
+  }
+
+  // 5. Единый RAF-планировщик (60/120 FPS без лишних перерисовок)
+  let rafMsgPending = false;
+  if (messagesViewport && 'MutationObserver' in window) {
+    const v17MsgObs = new MutationObserver(() => {
+      if (rafMsgPending) return;
+      rafMsgPending = true;
+      requestAnimationFrame(() => {
+        rafMsgPending = false;
+        renderInteractivePollsInChat();
+      });
+    });
+    v17MsgObs.observe(messagesViewport, { childList: true });
+    renderInteractivePollsInChat();
+  }
+
+  if (chatList && 'MutationObserver' in window) {
+    const v17ListObs = new MutationObserver(() => syncMarkAllReadVisibility());
+    v17ListObs.observe(chatList, { childList: true });
+    syncMarkAllReadVisibility();
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=16').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=17').catch(() => {});
     });
   }
 
