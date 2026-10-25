@@ -1,4 +1,4 @@
-// Pulse Messenger v12 — Аудио- и видеозвонки без VPN (P2P WebRTC), галерея общих фото и вложений в карточке чата, скачивание вложений, закрепление сообщений, ускорение голосовых 1x/1.5x/2x, черновики и быстрые реакции
+// Pulse Messenger v13 — Тактильная вибрация (Taptic Engine iPhone + Android) при удержании и реакциях, мгновенные реакции за 0 мс (Optimistic UI), карточки истории звонков в чате с кнопкой «Перезвонить» и гудки вызова
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -6,6 +6,9 @@
   const ICON_SEND = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="transform:translateX(1px);"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
   const ICON_MIC = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
   const ICON_VIDEO = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
+
+  // DOM: Тактильный отклик iPhone Taptic Engine
+  const iosHapticLabel = document.getElementById('iosHapticLabel');
 
   // DOM: Всплывающий баннер уведомлений (In-App Toast) и Push-баннер
   const inAppToast = document.getElementById('inAppToast');
@@ -125,7 +128,6 @@
   const peerHandle = document.getElementById('peerHandle');
   const peerPhone = document.getElementById('peerPhone');
   const peerBio = document.getElementById('peerBio');
-  const sharedMediaSection = document.getElementById('sharedMediaSection');
   const sharedMediaGrid = document.getElementById('sharedMediaGrid');
   const closePeerModalBtn = document.getElementById('closePeerModalBtn');
 
@@ -194,7 +196,6 @@
   let activeRoom = null;
   let roomMessages = [];
 
-  // Мгновенный кэш сообщений, превью и поиск внутри диалога
   const roomMessagesCache = new Map();
   const roomSummaryMap = new Map();
   let currentSelectingRoomId = null;
@@ -234,6 +235,58 @@
   let lastTypingBroadcastAt = 0;
   let soundEnabled = localStorage.getItem('pulse_sound') !== 'off';
 
+  // ТАКТИЛЬНЫЙ ОТКЛИК И ВИБРАЦИЯ КАК В TELEGRAM (iPhone Taptic Engine + Android Vibrate + Аудио-импульс)
+  let sharedAudioCtx = null;
+  function getAudioCtx() {
+    if (!sharedAudioCtx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+    return sharedAudioCtx;
+  }
+
+  function triggerHaptic(type = 'light') {
+    // 1. Нативный вибратор Android / поддерживаемых браузеров
+    if (navigator.vibrate) {
+      try {
+        if (type === 'heavy') navigator.vibrate([22, 35, 18]);
+        else if (type === 'medium') navigator.vibrate(18);
+        else navigator.vibrate(10);
+      } catch (e) {}
+    }
+
+    // 2. Нативный Taptic Engine на iPhone (iOS 17.4+ / iOS 18 switch)
+    if (iosHapticLabel) {
+      try {
+        iosHapticLabel.click();
+      } catch (e) {}
+    }
+
+    // 3. Мягкий низкочастотный тактильный щелчок (65 Гц, 14 мс), ощущаемый пальцем на корпусе телефона
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(type === 'medium' ? 140 : 95, now);
+      osc.frequency.exponentialRampToValueAtTime(48, now + 0.018);
+
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.018);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.02);
+    } catch (e) {}
+  }
+
   function getLocallyHiddenMsgIds() {
     try {
       return new Set(JSON.parse(localStorage.getItem('pulse_hidden_msgs') || '[]'));
@@ -265,7 +318,7 @@
   let holdTimer = null;
   let pointerStartY = 0;
 
-  // УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ВСТАВКИ СООБЩЕНИЯ В SUPABASE (100% совместимость с таблицей messages)
+  // УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ВСТАВКИ СООБЩЕНИЯ В SUPABASE
   async function insertMessageRow({
     id,
     room_id,
@@ -299,6 +352,9 @@
     if (msg.content && msg.content.startsWith('__PIN__|')) {
       return 'pin_packet';
     }
+    if (msg.content && msg.content.startsWith('__CALL__|')) {
+      return 'call_log';
+    }
     const url = (msg.media_url || '').toLowerCase();
     const mType = (msg.media_type || 'text').toLowerCase();
 
@@ -315,6 +371,16 @@
       return 'file';
     }
     return 'text';
+  }
+
+  // Разбор карточки звонка: __CALL__|audio/video|status(missed/canceled/completed)|durationSec
+  function parseCallLogMessage(content) {
+    const parts = String(content || '').split('|');
+    return {
+      callType: parts[1] === 'video' ? 'video' : 'audio',
+      status: parts[2] || 'missed', // 'missed' | 'canceled' | 'completed' | 'declined'
+      durationSec: Number(parts[3] || 0)
+    };
   }
 
   // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА В ВЕБ-ПРИЛОЖЕНИИ НА IPHONE
@@ -383,13 +449,14 @@
       scrollBottomBtn.classList.toggle('hidden', distFromBottom < 180);
     });
     scrollBottomBtn.addEventListener('click', () => {
+      triggerHaptic('light');
       messagesViewport.scrollTo({ top: messagesViewport.scrollHeight, behavior: 'smooth' });
     });
   }
 
-  // Поиск внутри открытого чата
   if (chatSearchToggleBtn && chatSearchBar) {
     chatSearchToggleBtn.addEventListener('click', () => {
+      triggerHaptic('light');
       const isHidden = chatSearchBar.classList.contains('hidden');
       if (isHidden) {
         chatSearchBar.classList.remove('hidden');
@@ -460,6 +527,7 @@
   }
 
   async function requestNotificationPermission() {
+    triggerHaptic('medium');
     if (!('Notification' in window)) {
       alert('Чтобы получать системные Push-уведомления на iPhone, откройте Pulse с иконки на экране «Домой» (iOS 16.4 и новее). Внутри приложения уведомления и баннеры уже работают!');
       return;
@@ -468,7 +536,7 @@
       const result = await Notification.requestPermission();
       updatePushPermissionUI();
       if (result === 'granted') {
-        sendSystemNotification('Pulse — Уведомления включены 🔔', 'Теперь вы будете сразу получать оповещения о новых сообщениях.', null);
+        sendSystemNotification('Pulse — Уведомления включены 🔔', 'Теперь вы будете сразу получать оповещения о новых сообщениях и звонках.', null);
       }
     } catch (e) {
       console.warn('Notification permission error:', e);
@@ -619,10 +687,18 @@
     const kind = detectMessageKind(msg);
     if (kind === 'reaction_packet') {
       const parts = msg.content.split('|');
-      return `Реакция ${parts[2] || '❤️'}`;
+      return `Поставил(а) реакцию ${parts[2] || '❤️'}`;
     }
     if (kind === 'pin_packet') {
       return '📌 Закрепил(а) сообщение';
+    }
+    if (kind === 'call_log') {
+      const info = parseCallLogMessage(msg.content);
+      const label = info.callType === 'video' ? '📹 Видеозвонок' : '📞 Аудиозвонок';
+      if (info.status === 'completed' && info.durationSec > 0) {
+        return `${label} (${formatSec(info.durationSec)})`;
+      }
+      return `${label} (пропущенный)`;
     }
     if (kind === 'voice') return '🎤 Голосовое сообщение';
     if (kind === 'video_circle') return '📹 Видеокружочек';
@@ -743,9 +819,7 @@
       (window.innerWidth > 768 || appShell.classList.contains('chat-active'));
 
     playNotificationSound();
-    if (navigator.vibrate) {
-      try { navigator.vibrate([120, 60, 120]); } catch (e) {}
-    }
+    triggerHaptic('medium');
 
     const previewText = await extractMessagePreviewText(incoming, room);
     const senderProfile = allProfiles.find((p) => p.id === incoming.sender_id);
@@ -813,7 +887,10 @@
   }
 
   themePills.forEach((btn) => {
-    btn.addEventListener('click', () => applyTheme(btn.dataset.setTheme));
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      applyTheme(btn.dataset.setTheme);
+    });
   });
   applyTheme(localStorage.getItem('pulse_theme') || 'system');
 
@@ -836,9 +913,8 @@
   function playNotificationSound() {
     if (!soundEnabled) return;
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
+      const ctx = getAudioCtx();
+      if (!ctx) return;
       const now = ctx.currentTime;
 
       const osc1 = ctx.createOscillator();
@@ -868,6 +944,7 @@
 
   if (shareInviteBtn) {
     shareInviteBtn.addEventListener('click', async () => {
+      triggerHaptic('light');
       const shareUrl = 'https://rickaveri.github.io/pulse/';
       const shareText = `Добавляйся ко мне в защищённый мессенджер Pulse! Мой никнейм: @${currentUser ? currentUser.username : ''}`;
       if (navigator.share) {
@@ -1371,6 +1448,7 @@
 
   // 7. Единый раздел «Настройки» и подтверждение выхода из аккаунта
   function openProfileModal() {
+    triggerHaptic('light');
     pendingAvatarUrl = currentUser.avatar_url || '';
     editNameInput.value = currentUser.display_name;
     editUsernameInput.value = currentUser.username;
@@ -1460,6 +1538,7 @@
     currentUser.bio = newBio;
     if (pendingAvatarUrl !== null) currentUser.avatar_url = pendingAvatarUrl;
 
+    triggerHaptic('medium');
     updateMyHeaderUI();
     profileModal.classList.add('hidden');
     await refreshDirectoryAndRooms();
@@ -1662,7 +1741,10 @@
 
         item.appendChild(avatarWrap);
         item.appendChild(body);
-        item.addEventListener('click', () => selectRoom(room));
+        item.addEventListener('click', () => {
+          triggerHaptic('light');
+          selectRoom(room);
+        });
         chatList.appendChild(item);
       });
       return;
@@ -1728,6 +1810,7 @@
       item.appendChild(avatarWrap);
       item.appendChild(body);
       item.addEventListener('click', async () => {
+        triggerHaptic('light');
         searchInput.value = '';
         searchClearBtn.classList.add('hidden');
         await openOrCreateDirectMessage(person);
@@ -1781,6 +1864,7 @@
 
   // 9. Создание закрытой группы
   newGroupBtn.addEventListener('click', () => {
+    triggerHaptic('light');
     groupNameInput.value = '';
     groupMembersPicker.innerHTML = '';
 
@@ -1897,7 +1981,6 @@
     });
     activeRoomOnlineDot.classList.toggle('hidden', !pres.online);
 
-    // Показываем кнопки аудио- и видеозвонка для личных чатов с друзьями
     const canCallPeer = Boolean(pres.peer && !pres.isSaved);
     if (voiceCallBtn) voiceCallBtn.classList.toggle('hidden', !canCallPeer);
     if (videoCallBtn) videoCallBtn.classList.toggle('hidden', !canCallPeer);
@@ -1907,6 +1990,7 @@
   }
 
   mobileBackBtn.addEventListener('click', () => {
+    triggerHaptic('light');
     if (activeRoom && !editingMsg) {
       setRoomDraft(activeRoom.id, messageInput.value);
     }
@@ -1923,6 +2007,7 @@
   chatHeaderTrigger.addEventListener('click', (e) => {
     if (e.target.closest('#mobileBackBtn')) return;
     if (!activeRoom) return;
+    triggerHaptic('light');
     const pres = getRoomPresentation(activeRoom);
 
     renderAvatarElement(peerAvatar, {
@@ -1947,7 +2032,6 @@
       peerBio.classList.add('hidden');
     }
 
-    // Заполняем галерею вложений из этого чата
     if (sharedMediaGrid) {
       sharedMediaGrid.innerHTML = '';
       const mediaMsgs = roomMessages.filter((m) => Boolean(m.media_url));
@@ -1997,6 +2081,7 @@
 
   e2eBadgeBtn.addEventListener('click', () => {
     if (!activeRoom) return;
+    triggerHaptic('light');
     chatSecretKeyInput.value = getRoomCustomSecret(activeRoom.id);
     e2eModal.classList.remove('hidden');
   });
@@ -2062,6 +2147,7 @@
     pinnedMsgBar.addEventListener('click', (e) => {
       if (e.target === unpinMsgBtn) return;
       if (!currentPinnedTargetId) return;
+      triggerHaptic('light');
       const targetEl = messagesViewport.querySelector(`[data-msg-id="${currentPinnedTargetId}"]`);
       if (targetEl) {
         targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -2078,6 +2164,7 @@
     unpinMsgBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!activeRoom) return;
+      triggerHaptic('light');
       localStorage.removeItem(`pulse_pin_${activeRoom.id}`);
       if (currentPinPacketId) {
         await supabaseClient.from('messages').delete().eq('id', currentPinPacketId);
@@ -2215,14 +2302,48 @@
 
       const { textBody, quoteLine, isEdited, inlineReaction } = parseCleanMessageStruct(plain);
 
-      if (quoteLine && !isCircle) {
+      if (quoteLine && !isCircle && kind !== 'call_log') {
         const qBox = document.createElement('div');
         qBox.className = 'msg-reply-quote';
         qBox.textContent = quoteLine;
         bubble.appendChild(qBox);
       }
 
-      if (msg.media_url) {
+      // Специальное отображение карточки звонка в истории чата!
+      if (kind === 'call_log') {
+        const callInfo = parseCallLogMessage(msg.content);
+        const isVideoCall = callInfo.callType === 'video';
+        const isCompleted = callInfo.status === 'completed' && callInfo.durationSec > 0;
+
+        let titleLabel = isVideoCall ? 'Видеозвонок' : 'Аудиозвонок';
+        let subLabel = '';
+        if (isCompleted) {
+          subLabel = `${isMine ? 'Исходящий' : 'Входящий'} • ${formatSec(callInfo.durationSec)}`;
+        } else if (isMine) {
+          subLabel = 'Отменён / Нет ответа';
+        } else {
+          titleLabel = isVideoCall ? 'Пропущенный видеозвонок' : 'Пропущенный аудиозвонок';
+          subLabel = 'Нажмите, чтобы перезвонить';
+        }
+
+        const callCard = document.createElement('div');
+        callCard.className = 'call-log-card';
+        callCard.innerHTML = `
+          <div class="call-log-icon ${!isCompleted && !isMine ? 'missed' : ''}">${isVideoCall ? '📹' : '📞'}</div>
+          <div class="call-log-info">
+            <div class="call-log-title">${escapeHtml(titleLabel)}</div>
+            <div class="call-log-sub">${escapeHtml(subLabel)}</div>
+          </div>
+          <button type="button" class="call-log-redial">Позвонить</button>
+        `;
+        const redialBtn = callCard.querySelector('.call-log-redial');
+        redialBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          triggerHaptic('medium');
+          startOutgoingCall(isVideoCall);
+        });
+        bubble.appendChild(callCard);
+      } else if (msg.media_url) {
         if (kind === 'image') {
           const img = document.createElement('img');
           img.className = 'msg-photo msg-image';
@@ -2250,6 +2371,7 @@
 
           circleWrap.addEventListener('click', (ev) => {
             ev.stopPropagation();
+            triggerHaptic('light');
             if (vid.paused) {
               vid.play();
               badge.textContent = '⏸ Пауза';
@@ -2284,7 +2406,7 @@
         }
       }
 
-      if (textBody && kind !== 'file') {
+      if (textBody && kind !== 'file' && kind !== 'call_log') {
         const txt = document.createElement('div');
         txt.innerHTML = renderTextWithLinks(textBody);
         bubble.appendChild(txt);
@@ -2310,11 +2432,7 @@
 
       if (allEmojis.length > 0) {
         const reactPill = document.createElement('span');
-        reactPill.style.background = 'rgba(255,255,255,0.22)';
-        reactPill.style.padding = '1px 7px';
-        reactPill.style.borderRadius = '999px';
-        reactPill.style.fontSize = '12.5px';
-        reactPill.style.cursor = 'pointer';
+        reactPill.className = 'reaction-chip-pill';
         reactPill.title = 'Нажмите, чтобы убрать или поставить реакцию';
         reactPill.textContent = allEmojis.join(' ');
         reactPill.addEventListener('click', async (ev) => {
@@ -2343,7 +2461,7 @@
       if (isMine) {
         const ticks = document.createElement('span');
         ticks.className = 'read-ticks';
-        ticks.textContent = '✓✓';
+        ticks.textContent = msg._optimistic ? '✓' : '✓✓';
         meta.appendChild(ticks);
       }
 
@@ -2355,11 +2473,62 @@
         row.appendChild(bubble);
       }
 
+      const ctxPayload = {
+        msg,
+        kind,
+        senderName,
+        plainText: textBody,
+        quoteLine,
+        isEdited,
+        myReactionPacketId: myReactionEntry ? myReactionEntry.packetId : null,
+        myReactionEmoji: myReactionEntry ? myReactionEntry.emoji : inlineReaction
+      };
+
+      // ЖЕСТЫ КАК В TELEGRAM:
+      // 1) Удержание пальцем (320 мс) — пружинящее сжатие + приятная вибрация Taptic + открытие меню
+      // 2) Двойной тап — мгновенный лайк ❤️ (за 0 мс!) с вибрацией
+      // 3) Одиночный тап — открытие меню с лёгким тактильным откликом
+      let longPressTimer = null;
+      let longPressFired = false;
       let clickTimeout = null;
-      bubble.addEventListener('click', () => {
+
+      bubble.addEventListener('pointerdown', (ev) => {
+        if (ev.target.closest('a, button, video')) return;
+        longPressFired = false;
+        bubble.classList.add('pressing');
+        longPressTimer = setTimeout(() => {
+          longPressFired = true;
+          bubble.classList.remove('pressing');
+          bubble.classList.add('haptic-pop');
+          setTimeout(() => bubble.classList.remove('haptic-pop'), 280);
+          triggerHaptic('medium');
+          openMessageActionSheet(ctxPayload);
+        }, 320);
+      });
+
+      const cancelLongPress = () => {
+        bubble.classList.remove('pressing');
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+      };
+
+      bubble.addEventListener('pointerup', cancelLongPress);
+      bubble.addEventListener('pointercancel', cancelLongPress);
+      bubble.addEventListener('pointermove', cancelLongPress);
+
+      bubble.addEventListener('click', (ev) => {
+        if (ev.target.closest('a, button')) return;
+        if (longPressFired) {
+          longPressFired = false;
+          return;
+        }
         if (clickTimeout) {
           clearTimeout(clickTimeout);
           clickTimeout = null;
+          bubble.classList.add('haptic-pop');
+          setTimeout(() => bubble.classList.remove('haptic-pop'), 280);
           toggleReactionOnMessage({
             msg,
             emoji: '❤️',
@@ -2370,17 +2539,9 @@
         }
         clickTimeout = setTimeout(() => {
           clickTimeout = null;
-          openMessageActionSheet({
-            msg,
-            kind,
-            senderName,
-            plainText: textBody,
-            quoteLine,
-            isEdited,
-            myReactionPacketId: myReactionEntry ? myReactionEntry.packetId : null,
-            myReactionEmoji: myReactionEntry ? myReactionEntry.emoji : inlineReaction
-          });
-        }, 190);
+          triggerHaptic('light');
+          openMessageActionSheet(ctxPayload);
+        }, 175);
       });
 
       messagesViewport.appendChild(row);
@@ -2391,22 +2552,51 @@
     }
   }
 
+  // МГНОВЕННАЯ РЕАКЦИЯ ЗА 0 МС (Optimistic UI Update + Тактильная вибрация!)
   async function toggleReactionOnMessage({ msg, emoji, myReactionPacketId, myReactionEmoji }) {
     if (!activeRoom || !msg) return;
+    triggerHaptic('medium');
+
+    const roomId = activeRoom.id;
+    const isRemoving = myReactionEmoji === emoji;
+
+    // 1. Мгновенно обновляем локальный массив сообщений и перерисовываем экран за 0 миллисекунд!
+    if (myReactionPacketId) {
+      roomMessages = roomMessages.filter((m) => m.id !== myReactionPacketId);
+    }
+    const tempPacketId = `optimistic_react_${Date.now()}`;
+    if (!isRemoving) {
+      roomMessages.push({
+        id: tempPacketId,
+        room_id: roomId,
+        sender_id: currentUser.id,
+        sender_name: currentUser.display_name,
+        content: `__REACT__|${msg.id}|${emoji}`,
+        media_type: 'text',
+        created_at: new Date().toISOString()
+      });
+    }
+    roomMessagesCache.set(roomId, roomMessages);
+    await renderMessages(roomId);
+
+    // 2. В фоне синхронизируем с базой данных Supabase
     try {
-      if (myReactionPacketId) {
+      if (myReactionPacketId && !String(myReactionPacketId).startsWith('optimistic_')) {
         await supabaseClient.from('messages').delete().eq('id', myReactionPacketId);
       }
-      if (myReactionEmoji !== emoji) {
-        await insertMessageRow({
-          room_id: activeRoom.id,
+      if (!isRemoving) {
+        const { data } = await insertMessageRow({
+          room_id: roomId,
           content: `__REACT__|${msg.id}|${emoji}`,
           media_type: 'text'
         });
+        if (data && data[0]) {
+          roomMessages = roomMessages.map((m) => (m.id === tempPacketId ? data[0] : m));
+          roomMessagesCache.set(roomId, roomMessages);
+        }
       }
-      await loadMessages(activeRoom.id);
     } catch (err) {
-      console.warn('Reaction toggle error:', err);
+      console.warn('Reaction sync error:', err);
     }
   }
 
@@ -2426,6 +2616,7 @@
   }
 
   sheetCancelBtn.addEventListener('click', () => {
+    triggerHaptic('light');
     msgActionModal.classList.add('hidden');
   });
 
@@ -2436,6 +2627,7 @@
   if (sheetDownloadBtn) {
     sheetDownloadBtn.addEventListener('click', () => {
       if (!selectedMsgContext || !selectedMsgContext.msg.media_url) return;
+      triggerHaptic('light');
       const url = selectedMsgContext.msg.media_url;
       msgActionModal.classList.add('hidden');
       const a = document.createElement('a');
@@ -2466,6 +2658,7 @@
 
   sheetReplyBtn.addEventListener('click', () => {
     if (!selectedMsgContext) return;
+    triggerHaptic('light');
     const { msg, senderName, plainText } = selectedMsgContext;
     msgActionModal.classList.add('hidden');
     setReplyMessage(msg, senderName, plainText);
@@ -2474,6 +2667,7 @@
   if (sheetPinBtn) {
     sheetPinBtn.addEventListener('click', async () => {
       if (!selectedMsgContext || !activeRoom) return;
+      triggerHaptic('medium');
       const targetId = selectedMsgContext.msg.id;
       msgActionModal.classList.add('hidden');
 
@@ -2493,6 +2687,7 @@
   if (sheetForwardBtn) {
     sheetForwardBtn.addEventListener('click', () => {
       if (!selectedMsgContext) return;
+      triggerHaptic('light');
       msgActionModal.classList.add('hidden');
       forwardRoomsList.innerHTML = '';
 
@@ -2503,6 +2698,7 @@
         btn.className = 'sheet-item';
         btn.innerHTML = `<span><strong>${escapeHtml(pres.title)}</strong></span>`;
         btn.addEventListener('click', async () => {
+          triggerHaptic('medium');
           forwardModal.classList.add('hidden');
           const { msg, senderName, plainText } = selectedMsgContext;
           const forwardPlain = plainText
@@ -2540,6 +2736,7 @@
 
   sheetCopyBtn.addEventListener('click', async () => {
     if (!selectedMsgContext || !selectedMsgContext.plainText) return;
+    triggerHaptic('light');
     try {
       await navigator.clipboard.writeText(selectedMsgContext.plainText);
     } catch (e) {}
@@ -2548,6 +2745,7 @@
 
   sheetEditBtn.addEventListener('click', () => {
     if (!selectedMsgContext) return;
+    triggerHaptic('light');
     const { msg, plainText, quoteLine } = selectedMsgContext;
     msgActionModal.classList.add('hidden');
 
@@ -2571,6 +2769,7 @@
 
   sheetDeleteBtn.addEventListener('click', () => {
     if (!selectedMsgContext) return;
+    triggerHaptic('light');
     msgActionModal.classList.add('hidden');
     const isMine = selectedMsgContext.msg.sender_id === currentUser.id;
     deleteForAllBtn.classList.toggle('hidden', !isMine);
@@ -2583,6 +2782,7 @@
 
   deleteForMeBtn.addEventListener('click', async () => {
     if (!selectedMsgContext) return;
+    triggerHaptic('medium');
     hideMsgLocally(selectedMsgContext.msg.id);
     deleteConfirmModal.classList.add('hidden');
     selectedMsgContext = null;
@@ -2595,9 +2795,14 @@
 
   deleteForAllBtn.addEventListener('click', async () => {
     if (!selectedMsgContext || !activeRoom) return;
+    triggerHaptic('medium');
     const msgId = selectedMsgContext.msg.id;
     deleteConfirmModal.classList.add('hidden');
     selectedMsgContext = null;
+
+    roomMessages = roomMessages.filter((m) => m.id !== msgId);
+    roomMessagesCache.set(activeRoom.id, roomMessages);
+    await renderMessages(activeRoom.id);
 
     await supabaseClient.from('messages').delete().eq('id', msgId);
     await loadMessages(activeRoom.id);
@@ -2640,6 +2845,7 @@
 
     speedBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
+      triggerHaptic('light');
       speedIdx = (speedIdx + 1) % speeds.length;
       audio.playbackRate = speeds[speedIdx];
       speedBtn.textContent = `${speeds[speedIdx]}x`;
@@ -2665,6 +2871,7 @@
 
     playBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
+      triggerHaptic('light');
       if (audio.paused) {
         audio.playbackRate = speeds[speedIdx];
         audio.play();
@@ -2715,7 +2922,7 @@
 
   cancelReplyBtn.addEventListener('click', clearComposerState);
 
-  // 12. Умная кнопка 3-в-1 + Пауза записи + Переключение камеры в видеокружочке
+  // 12. Умная кнопка 3-в-1 + Мгновенная отправка сообщений (Optimistic UI)
   function updateSmartActionButtonUI() {
     const hasText = messageInput.value.trim().length > 0;
 
@@ -2746,6 +2953,7 @@
     const rawText = messageInput.value.trim();
     if (!rawText) return;
 
+    triggerHaptic('light');
     messageInput.value = '';
     setRoomDraft(activeRoom.id, '');
 
@@ -2786,19 +2994,36 @@
       clearComposerState();
     }
 
-    const encrypted = await encryptTextForRoom(finalPlain, activeRoom);
+    const roomSnapshot = activeRoom;
+    const encrypted = await encryptTextForRoom(finalPlain, roomSnapshot);
+
+    // Мгновенно добавляем своё сообщение на экран (0 мс ожидания!)
+    const tempId = `optimistic_msg_${Date.now()}`;
+    const optimisticRow = {
+      id: tempId,
+      room_id: roomSnapshot.id,
+      sender_id: currentUser.id,
+      sender_name: currentUser.display_name,
+      sender_color: currentUser.color,
+      content: encrypted,
+      media_type: 'text',
+      created_at: new Date().toISOString(),
+      _optimistic: true
+    };
+    roomMessages.push(optimisticRow);
+    roomMessagesCache.set(roomSnapshot.id, roomMessages);
+    await renderMessages(roomSnapshot.id);
 
     const { error } = await insertMessageRow({
-      room_id: activeRoom.id,
+      room_id: roomSnapshot.id,
       content: encrypted,
       media_type: 'text'
     });
 
     if (error) {
       alert('Ошибка отправки: ' + error.message);
-    } else {
-      await loadMessages(activeRoom.id);
     }
+    await loadMessages(roomSnapshot.id);
   }
 
   messageInput.addEventListener('input', () => {
@@ -2831,6 +3056,7 @@
 
   attachBtn.addEventListener('click', () => {
     if (!activeRoom) return;
+    triggerHaptic('light');
     attachmentInput.click();
   });
 
@@ -2895,6 +3121,7 @@
 
     holdTimer = setTimeout(() => {
       holdTimer = null;
+      triggerHaptic('medium');
       startMediaRecording(recordMode);
     }, 210);
   });
@@ -2904,6 +3131,7 @@
     const deltaY = pointerStartY - e.clientY;
     if (deltaY > 45) {
       isRecordingLocked = true;
+      triggerHaptic('medium');
       updateSmartActionButtonUI();
     }
   });
@@ -2912,6 +3140,7 @@
     if (holdTimer) {
       clearTimeout(holdTimer);
       holdTimer = null;
+      triggerHaptic('light');
       recordMode = recordMode === 'voice' ? 'video' : 'voice';
       localStorage.setItem('pulse_rec_mode', recordMode);
       updateSmartActionButtonUI();
@@ -3065,6 +3294,7 @@
 
   function togglePauseRecording() {
     if (!isRecording || !activeMediaRecorder) return;
+    triggerHaptic('light');
     if (!isRecordingPaused) {
       isRecordingPaused = true;
       elapsedRecordMs += Date.now() - lastResumeTime;
@@ -3092,6 +3322,7 @@
 
   vcFlipCamBtn.addEventListener('click', async () => {
     if (!isRecording || recordMode !== 'video') return;
+    triggerHaptic('light');
     cameraFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
     try {
       record.keepRecordingOnFlip = true;
@@ -3125,6 +3356,7 @@
 
   function finishRecordingAndSend() {
     if (!isRecording || !activeMediaRecorder) return;
+    triggerHaptic('medium');
     recordCanceled = false;
     record.keepRecordingOnFlip = false;
     if (activeMediaRecorder.state !== 'inactive') {
@@ -3134,6 +3366,7 @@
 
   function cancelActiveRecording() {
     if (!isRecording) return;
+    triggerHaptic('light');
     recordCanceled = true;
     record.keepRecordingOnFlip = false;
     if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
@@ -3169,10 +3402,10 @@
     updateSmartActionButtonUI();
   }
 
-  // 12.5. АУДИО- И ВИДЕОЗВОНКИ БЕЗ VPN (P2P WebRTC через Supabase Realtime)
+  // 12.5. АУДИО- И ВИДЕОЗВОНКИ БЕЗ VPN (с гудками вызова и карточками звонков в переписке!)
   let rtcPeerConnection = null;
   let localCallStream = null;
-  let activeCallState = null; // { peerId, roomId, isVideo, incomingOffer, callStartTime, timerId }
+  let activeCallState = null; // { peerId, roomId, isVideo, isOutgoing, incomingOffer, callStartTime, timerId, ringTimerId, logged }
   let isCallMuted = false;
 
   const RTC_CONFIG = {
@@ -3181,6 +3414,48 @@
       { urls: 'stun:stun1.l.google.com:19302' }
     ]
   };
+
+  // Звук гудков при исходящем или входящем звонке
+  function playCallTone(isIncoming) {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      if (isIncoming) {
+        osc.frequency.setValueAtTime(523.25, now);
+        osc.frequency.setValueAtTime(659.25, now + 0.18);
+      } else {
+        // Классический телефонный гудок 425 Гц
+        osc.frequency.setValueAtTime(425, now);
+      }
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.11, now + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.46);
+    } catch (e) {}
+  }
+
+  function startCallRingingLoop(isIncoming) {
+    playCallTone(isIncoming);
+    return setInterval(() => {
+      playCallTone(isIncoming);
+      if (isIncoming) triggerHaptic('medium');
+    }, 2200);
+  }
+
+  function stopCallRingingLoop() {
+    if (activeCallState && activeCallState.ringTimerId) {
+      clearInterval(activeCallState.ringTimerId);
+      activeCallState.ringTimerId = null;
+    }
+  }
 
   function setupCallOverlayUI(peer, statusMsg, showAccept, isVideo) {
     if (!callOverlay) return;
@@ -3201,6 +3476,8 @@
     const pres = getRoomPresentation(activeRoom);
     if (!pres.peer) return;
 
+    triggerHaptic('medium');
+
     try {
       localCallStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -3211,18 +3488,29 @@
         callLocalVideo.srcObject = localCallStream;
       }
 
+      const peerOnline = isPersonOnline(pres.peer);
       activeCallState = {
         peerId: pres.peer.id,
         roomId: activeRoom.id,
         isVideo,
+        isOutgoing: true,
         incomingOffer: null,
         callStartTime: 0,
-        timerId: null
+        timerId: null,
+        ringTimerId: startCallRingingLoop(false),
+        logged: false
       };
       isCallMuted = false;
       callMuteBtn.style.opacity = '1';
 
-      setupCallOverlayUI(pres.peer, isVideo ? 'Видеовызов...' : 'Аудиовызов...', false, isVideo);
+      setupCallOverlayUI(
+        pres.peer,
+        peerOnline
+          ? (isVideo ? 'Идёт видеовызов (собеседник в сети)...' : 'Идёт вызов (собеседник в сети)...')
+          : 'Вызов... (собеседник сейчас не в сети — останется уведомление о звонке)',
+        false,
+        isVideo
+      );
 
       rtcPeerConnection = createRtcPeerConnection(pres.peer.id);
       localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
@@ -3244,7 +3532,7 @@
       });
     } catch (err) {
       alert('Для звонка разрешите доступ к микрофону/камере: ' + (err.message || err));
-      endActiveCall(false);
+      await endActiveCall(false);
     }
   }
 
@@ -3274,6 +3562,8 @@
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected' && activeCallState && !activeCallState.callStartTime) {
+        stopCallRingingLoop();
+        triggerHaptic('medium');
         activeCallState.callStartTime = Date.now();
         activeCallState.timerId = setInterval(() => {
           if (!activeCallState) return;
@@ -3294,18 +3584,18 @@
 
     if (payload.type === 'offer') {
       if (activeCallState) return;
-      playNotificationSound();
-      if (navigator.vibrate) {
-        try { navigator.vibrate([300, 150, 300]); } catch (e) {}
-      }
+      triggerHaptic('heavy');
 
       activeCallState = {
         peerId: payload.from_id,
         roomId: payload.room_id,
         isVideo: Boolean(payload.is_video),
+        isOutgoing: false,
         incomingOffer: payload.sdp,
         callStartTime: 0,
-        timerId: null
+        timerId: null,
+        ringTimerId: startCallRingingLoop(true),
+        logged: false
       };
 
       setupCallOverlayUI(
@@ -3321,6 +3611,7 @@
         payload.room_id
       );
     } else if (payload.type === 'answer' && rtcPeerConnection) {
+      stopCallRingingLoop();
       await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
       callStatusText.textContent = 'Соединение установлено';
     } else if (payload.type === 'ice' && rtcPeerConnection && payload.candidate) {
@@ -3328,13 +3619,15 @@
         await rtcPeerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
       } catch (e) {}
     } else if (payload.type === 'hangup') {
-      endActiveCall(false);
+      await endActiveCall(false);
     }
   }
 
   if (callAcceptBtn) {
     callAcceptBtn.addEventListener('click', async () => {
       if (!activeCallState || !activeCallState.incomingOffer) return;
+      triggerHaptic('medium');
+      stopCallRingingLoop();
       try {
         callAcceptBtn.classList.add('hidden');
         callStatusText.textContent = 'Подключение...';
@@ -3367,27 +3660,20 @@
         });
       } catch (err) {
         alert('Не удалось принять звонок: ' + (err.message || err));
-        endActiveCall(true);
+        await endActiveCall(true);
       }
     });
   }
 
-  function endActiveCall(notifyPeer = true) {
-    if (notifyPeer && activeCallState && realtimeChannel) {
-      realtimeChannel.send({
-        type: 'broadcast',
-        event: 'call-signal',
-        payload: {
-          type: 'hangup',
-          from_id: currentUser.id,
-          to_id: activeCallState.peerId
-        }
-      });
-    }
-    if (activeCallState && activeCallState.timerId) {
-      clearInterval(activeCallState.timerId);
-    }
+  // Завершение звонка + автоматическая запись карточки звонка в историю чата!
+  async function endActiveCall(notifyPeer = true) {
+    stopCallRingingLoop();
+    const stateSnapshot = activeCallState;
     activeCallState = null;
+
+    if (stateSnapshot && stateSnapshot.timerId) {
+      clearInterval(stateSnapshot.timerId);
+    }
     if (rtcPeerConnection) {
       try { rtcPeerConnection.close(); } catch (e) {}
       rtcPeerConnection = null;
@@ -3399,6 +3685,41 @@
     if (callRemoteVideo) callRemoteVideo.srcObject = null;
     if (callLocalVideo) callLocalVideo.srcObject = null;
     if (callOverlay) callOverlay.classList.add('hidden');
+
+    if (!stateSnapshot) return;
+
+    if (notifyPeer && realtimeChannel) {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'call-signal',
+        payload: {
+          type: 'hangup',
+          from_id: currentUser.id,
+          to_id: stateSnapshot.peerId
+        }
+      });
+    }
+
+    // Если звонок инициировали мы (isOutgoing), записываем карточку звонка в историю переписки,
+    // чтобы и у нас, и у Артёма в чате осталась плашка о звонке и пришло Push-уведомление!
+    if (stateSnapshot.isOutgoing && !stateSnapshot.logged && stateSnapshot.roomId) {
+      stateSnapshot.logged = true;
+      const durSec = stateSnapshot.callStartTime
+        ? Math.max(1, Math.floor((Date.now() - stateSnapshot.callStartTime) / 1000))
+        : 0;
+      const status = durSec > 0 ? 'completed' : 'missed';
+      const callTypeStr = stateSnapshot.isVideo ? 'video' : 'audio';
+
+      await insertMessageRow({
+        room_id: stateSnapshot.roomId,
+        content: `__CALL__|${callTypeStr}|${status}|${durSec}`,
+        media_type: 'text',
+        media_duration: durSec
+      });
+      if (activeRoom && activeRoom.id === stateSnapshot.roomId) {
+        await loadMessages(stateSnapshot.roomId);
+      }
+    }
   }
 
   if (voiceCallBtn) {
@@ -3408,11 +3729,15 @@
     videoCallBtn.addEventListener('click', () => startOutgoingCall(true));
   }
   if (callHangupBtn) {
-    callHangupBtn.addEventListener('click', () => endActiveCall(true));
+    callHangupBtn.addEventListener('click', () => {
+      triggerHaptic('medium');
+      endActiveCall(true);
+    });
   }
   if (callMuteBtn) {
     callMuteBtn.addEventListener('click', () => {
       if (!localCallStream) return;
+      triggerHaptic('light');
       isCallMuted = !isCallMuted;
       localCallStream.getAudioTracks().forEach((t) => {
         t.enabled = !isCallMuted;
@@ -3426,7 +3751,7 @@
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
     realtimeChannel = supabaseClient
-      .channel('pulse-live-v12', {
+      .channel('pulse-live-v13', {
         config: { presence: { key: currentUser.id } }
       })
       .on('presence', { event: 'sync' }, () => {
@@ -3572,7 +3897,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=12').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=13').catch(() => {});
     });
   }
 

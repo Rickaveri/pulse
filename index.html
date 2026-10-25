@@ -10,12 +10,19 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=12" />
+  <link rel="stylesheet" href="./styles.css?v=13" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=12"></script>
+  <script src="./config.js?v=13"></script>
 </head>
 <body>
+
+  <!-- Скрытый триггер нативной вибрации Taptic Engine на iPhone (iOS 17.4+ / iOS 18) -->
+  <div class="ios-haptic-trigger" aria-hidden="true">
+    <label id="iosHapticLabel" for="iosHapticSwitch">
+      <input type="checkbox" id="iosHapticSwitch" switch />
+    </label>
+  </div>
 
   <!-- Всплывающий баннер нового сообщения сверху (как в Telegram / iOS) -->
   <div id="inAppToast" class="inapp-toast hidden">
@@ -187,7 +194,7 @@
     </div>
   </div>
 
-  <!-- Всплывающее меню действий при нажатии на сообщение -->
+  <!-- Всплывающее меню действий при нажатии или удержании на сообщении -->
   <div id="msgActionModal" class="modal-backdrop hidden">
     <div class="action-sheet-card">
       <div class="reaction-picker-bar">
@@ -536,6 +543,6 @@
     <img id="lightboxImg" src="" alt="Фото" />
   </div>
 
-  <script src="./app.js?v=12"></script>
+  <script src="./app.js?v=13"></script>
 </body>
 </html>
