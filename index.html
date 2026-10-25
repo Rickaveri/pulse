@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=15" />
+  <link rel="stylesheet" href="./styles.css?v=16" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=15"></script>
+  <script src="./config.js?v=16"></script>
 </head>
 <body>
 
@@ -556,8 +556,26 @@
           <button id="cancelReplyBtn" class="icon-btn" type="button" style="width:28px; height:28px;">✕</button>
         </div>
 
+        <!-- Выдвижная панель быстрых эмодзи, стикеров и голосового набора текста (v16) -->
+        <div id="emojiDrawer" class="emoji-drawer hidden">
+          <div class="emoji-drawer-list">
+            <button type="button" class="emoji-quick-item" data-insert-emoji="❤️">❤️</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="🔥">🔥</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="😂">😂</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="👍">👍</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="🎉">🎉</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="😎">😎</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="🤝">🤝</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="🚀">🚀</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="🙏">🙏</button>
+            <button type="button" class="emoji-quick-item" data-insert-emoji="💯">💯</button>
+          </div>
+          <button id="voiceDictateBtn" class="dictate-pill-btn" type="button" title="Голосовой ввод текста">🎙️ Диктовка</button>
+        </div>
+
         <!-- Нижняя панель ввода -->
         <footer class="composer">
+          <button id="emojiToggleBtn" class="icon-btn" type="button" title="Эмодзи и голосовой набор" style="width:36px; height:36px; font-size:18px;">😊</button>
           <input id="attachmentInput" type="file" class="hidden" />
           <button id="attachBtn" class="icon-btn" type="button" title="Прикрепить фото или файл">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -603,6 +621,9 @@
     <button id="miniCallHangupBtn" class="mini-call-hangup" type="button" title="Завершить звонок">📵 Сброс</button>
   </div>
 
-  <script src="./app.js?v=15"></script>
+  <!-- Индикатор состояния интернет-соединения (v16) -->
+  <div id="networkStatusBanner" class="network-status-banner hidden">⚠️ Ожидание сети... Проверьте подключение</div>
+
+  <script src="./app.js?v=16"></script>
 </body>
 </html>

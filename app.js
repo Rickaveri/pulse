@@ -4409,9 +4409,296 @@
     });
   }
 
+  // =========================================================================
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v16:
+  // 1) Выдвижная панель быстрых эмодзи и стикеров над полем ввода (😊)
+  // 2) Голосовой набор текста на русском языке (🎙️ Диктовка через Web Speech API)
+  // 3) Гигантские эмодзи-стикеры (Jumbo Emojis) для сообщений из 1-3 смайликов + копирование `кода` в 1 тап
+  // 4) Двойной тап (или двойной клик) по сообщению для мгновенного лайка ❤️ с анимацией сердца
+  // 5) Закрепление важных диалогов наверху списка чатов (правый клик по диалогу в списке)
+  // 6) Живой индикатор состояния сети (Ожидание сети / На связи с автосинхронизацией)
+  // =========================================================================
+  const emojiToggleBtn = document.getElementById('emojiToggleBtn');
+  const emojiDrawer = document.getElementById('emojiDrawer');
+  const voiceDictateBtn = document.getElementById('voiceDictateBtn');
+  const networkStatusBanner = document.getElementById('networkStatusBanner');
+
+  // 1. Панель быстрых эмодзи и стикеров
+  if (emojiToggleBtn && emojiDrawer && messageInput) {
+    emojiToggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      triggerHaptic('light');
+      emojiDrawer.classList.toggle('hidden');
+    });
+
+    const quickEmojiBtns = Array.from(emojiDrawer.querySelectorAll('[data-insert-emoji]'));
+    quickEmojiBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        triggerHaptic('light');
+        const emoji = btn.getAttribute('data-insert-emoji') || '';
+        const start = messageInput.selectionStart || messageInput.value.length;
+        const end = messageInput.selectionEnd || messageInput.value.length;
+        const val = messageInput.value;
+        messageInput.value = val.slice(0, start) + emoji + val.slice(end);
+        messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        messageInput.focus();
+      });
+    });
+  }
+
+  // 2. Голосовой набор текста (Speech-to-Text диктовка на русском языке)
+  let speechRecognizer = null;
+  let isDictating = false;
+
+  if (voiceDictateBtn && messageInput) {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      voiceDictateBtn.style.display = 'none';
+    } else {
+      voiceDictateBtn.addEventListener('click', () => {
+        triggerHaptic('medium');
+        if (isDictating && speechRecognizer) {
+          try {
+            speechRecognizer.stop();
+          } catch (e) {}
+          return;
+        }
+        try {
+          speechRecognizer = new SpeechRec();
+          speechRecognizer.lang = 'ru-RU';
+          speechRecognizer.interimResults = false;
+          speechRecognizer.maxAlternatives = 1;
+
+          speechRecognizer.onstart = () => {
+            isDictating = true;
+            voiceDictateBtn.classList.add('listening');
+            voiceDictateBtn.textContent = '🔴 Слушаю...';
+          };
+
+          speechRecognizer.onresult = (event) => {
+            const transcript =
+              event.results &&
+              event.results[0] &&
+              event.results[0][0]
+                ? event.results[0][0].transcript
+                : '';
+            if (transcript) {
+              const prefix = messageInput.value && !messageInput.value.endsWith(' ') ? ' ' : '';
+              messageInput.value += prefix + transcript;
+              messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+              messageInput.focus();
+            }
+          };
+
+          speechRecognizer.onerror = () => {
+            isDictating = false;
+            voiceDictateBtn.classList.remove('listening');
+            voiceDictateBtn.textContent = '🎙️ Диктовка';
+          };
+
+          speechRecognizer.onend = () => {
+            isDictating = false;
+            voiceDictateBtn.classList.remove('listening');
+            voiceDictateBtn.textContent = '🎙️ Диктовка';
+          };
+
+          speechRecognizer.start();
+        } catch (e) {
+          isDictating = false;
+          voiceDictateBtn.classList.remove('listening');
+          voiceDictateBtn.textContent = '🎙️ Диктовка';
+        }
+      });
+    }
+  }
+
+  // 3. Гигантские эмодзи (Jumbo Emojis), копирование inline-кода и 4. Двойной тап для лайка ❤️
+  function isJumboEmojiOnly(str) {
+    const clean = String(str || '').trim();
+    if (!clean || clean.length > 14) return false;
+    if (/[a-zA-Zа-яА-ЯёЁ0-9.,!?:;'"()[\]{}<>/\\|@#$%^&*_+=~`-]/.test(clean)) return false;
+    return /\p{Extended_Pictographic}/u.test(clean);
+  }
+
+  function applyV16BubbleUpgrades() {
+    if (!messagesViewport) return;
+    const bubbles = Array.from(messagesViewport.querySelectorAll('.msg-bubble'));
+
+    bubbles.forEach((bubble) => {
+      if (bubble.dataset.v16Bound) return;
+      bubble.dataset.v16Bound = '1';
+
+      const hasMedia = bubble.querySelector('img, video, .voice-player, .file-card, .call-log-card, .msg-reply-quote');
+      if (!hasMedia) {
+        const metaEl = bubble.querySelector('.msg-meta');
+        const clone = bubble.cloneNode(true);
+        const cloneMeta = clone.querySelector('.msg-meta');
+        if (cloneMeta) cloneMeta.remove();
+        const cloneReacts = clone.querySelectorAll('.reaction-chip-pill');
+        cloneReacts.forEach((r) => r.remove());
+        const pureText = clone.textContent.trim();
+
+        if (isJumboEmojiOnly(pureText) && (!metaEl || pureText.length <= 12)) {
+          bubble.classList.add('jumbo-emoji-bubble');
+        }
+      }
+
+      // Копирование моноширинного `кода` в 1 клик
+      const codeBlocks = Array.from(bubble.querySelectorAll('.inline-code'));
+      codeBlocks.forEach((codeEl) => {
+        codeEl.title = 'Нажмите, чтобы скопировать код';
+        codeEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          triggerHaptic('light');
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(codeEl.textContent || '').catch(() => {});
+          }
+          showInAppToast({
+            title: 'Скопировано 📋',
+            text: codeEl.textContent || '',
+            peer: null,
+            roomId: activeRoom ? activeRoom.id : null
+          });
+        });
+      });
+
+      // Двойной тап (или двойной клик) по пузырю сообщения для быстрого лайка ❤️
+      let lastTapTs = 0;
+      const triggerHeartLike = (e) => {
+        e.stopPropagation();
+        triggerHaptic('medium');
+
+        const heart = document.createElement('div');
+        heart.className = 'double-tap-heart';
+        heart.textContent = '❤️';
+        bubble.appendChild(heart);
+        setTimeout(() => heart.remove(), 600);
+
+        const existingPill = Array.from(bubble.querySelectorAll('.reaction-chip-pill')).find((el) =>
+          el.textContent.includes('❤️')
+        );
+        if (existingPill) {
+          existingPill.click();
+        }
+      };
+
+      bubble.addEventListener('dblclick', triggerHeartLike);
+      bubble.addEventListener('touchend', (e) => {
+        const now = Date.now();
+        if (now - lastTapTs < 280 && now - lastTapTs > 40) {
+          triggerHeartLike(e);
+          lastTapTs = 0;
+        } else {
+          lastTapTs = now;
+        }
+      }, { passive: true });
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    const v16MsgObs = new MutationObserver(() => {
+      applyV16BubbleUpgrades();
+    });
+    v16MsgObs.observe(messagesViewport, { childList: true, subtree: false });
+    applyV16BubbleUpgrades();
+  }
+
+  // 5. Закрепление важных диалогов наверху списка чатов (Правый клик по диалогу в сайдбаре)
+  function getPinnedChatTitles() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('pulse_pinned_chats') || '[]'));
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  function togglePinnedChatTitle(title) {
+    if (!title) return;
+    const set = getPinnedChatTitles();
+    if (set.has(title)) set.delete(title);
+    else set.add(title);
+    localStorage.setItem('pulse_pinned_chats', JSON.stringify(Array.from(set)));
+  }
+
+  let isReorderingChats = false;
+  function applyPinnedChatsInSidebar() {
+    if (!chatList || isReorderingChats) return;
+    isReorderingChats = true;
+    try {
+      const pinnedSet = getPinnedChatTitles();
+      const items = Array.from(chatList.querySelectorAll('.chat-item'));
+
+      items.forEach((item) => {
+        const titleEl = item.querySelector('.chat-item-title, .chat-item-name');
+        if (!titleEl) return;
+        const cleanTitle = titleEl.textContent.replace(/^📌\s*/, '').trim();
+        titleEl.dataset.cleanTitle = cleanTitle;
+
+        const isPinned = pinnedSet.has(cleanTitle);
+        if (isPinned && !titleEl.textContent.startsWith('📌')) {
+          titleEl.textContent = `📌 ${cleanTitle}`;
+        } else if (!isPinned && titleEl.textContent.startsWith('📌')) {
+          titleEl.textContent = cleanTitle;
+        }
+
+        if (!item.dataset.pinBound) {
+          item.dataset.pinBound = '1';
+          item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            triggerHaptic('medium');
+            togglePinnedChatTitle(cleanTitle);
+            applyPinnedChatsInSidebar();
+          });
+        }
+      });
+
+      const pinnedItems = items.filter((item) => {
+        const tEl = item.querySelector('.chat-item-title, .chat-item-name');
+        const cTitle = tEl ? (tEl.dataset.cleanTitle || '') : '';
+        return pinnedSet.has(cTitle);
+      });
+
+      pinnedItems.reverse().forEach((pItem) => {
+        if (chatList.firstElementChild && chatList.firstElementChild !== pItem) {
+          chatList.insertBefore(pItem, chatList.firstElementChild);
+        }
+      });
+    } finally {
+      isReorderingChats = false;
+    }
+  }
+
+  if (chatList && 'MutationObserver' in window) {
+    const pinChatObs = new MutationObserver(() => {
+      applyPinnedChatsInSidebar();
+    });
+    pinChatObs.observe(chatList, { childList: true });
+    applyPinnedChatsInSidebar();
+  }
+
+  // 6. Живой индикатор состояния интернет-соединения с автосинхронизацией
+  if (networkStatusBanner) {
+    window.addEventListener('offline', () => {
+      networkStatusBanner.textContent = '⚠️ Ожидание сети... Проверьте подключение';
+      networkStatusBanner.classList.remove('online-restored', 'hidden');
+    });
+
+    window.addEventListener('online', () => {
+      networkStatusBanner.textContent = '✓ Соединение восстановлено';
+      networkStatusBanner.classList.add('online-restored');
+      networkStatusBanner.classList.remove('hidden');
+      if (typeof preloadAllRoomsMessages === 'function') {
+        preloadAllRoomsMessages().catch(() => {});
+      }
+      setTimeout(() => {
+        networkStatusBanner.classList.add('hidden');
+      }, 2400);
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=15').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=16').catch(() => {});
     });
   }
 

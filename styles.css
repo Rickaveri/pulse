@@ -846,6 +846,126 @@ input, textarea {
   background: rgba(0, 0, 0, 0.22);
   padding: 1px 6px;
   border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Выдвижная панель быстрых эмодзи и голосового набора (v16) */
+.emoji-drawer {
+  padding: 7px 12px;
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  animation: sheetPopIn 0.15s ease-out;
+}
+
+.emoji-drawer-list {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1;
+}
+
+.emoji-drawer-list::-webkit-scrollbar {
+  display: none;
+}
+
+.emoji-quick-item {
+  background: transparent;
+  border: none;
+  font-size: 22px;
+  padding: 4px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 0.14s ease, background 0.14s ease;
+  flex-shrink: 0;
+}
+
+.emoji-quick-item:hover,
+.emoji-quick-item:active {
+  transform: scale(1.22);
+  background: var(--bg-hover);
+}
+
+.dictate-pill-btn {
+  background: var(--accent-soft);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: var(--text-main);
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.16s ease;
+}
+
+.dictate-pill-btn.listening {
+  background: var(--danger);
+  border-color: transparent;
+  color: #ffffff;
+  animation: pulse 1s infinite;
+}
+
+/* Крупные одиночные эмодзи-стикеры (Jumbo Emoji v16) */
+.msg-bubble.jumbo-emoji-bubble {
+  font-size: 38px !important;
+  line-height: 1.15 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 2px 4px !important;
+}
+
+/* Всплывающее сердечко при двойном тапе по сообщению (v16) */
+.double-tap-heart {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.4);
+  font-size: 36px;
+  pointer-events: none;
+  z-index: 30;
+  animation: heartBurst 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes heartBurst {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+  45% { opacity: 1; transform: translate(-50%, -60%) scale(1.35); }
+  100% { opacity: 0; transform: translate(-50%, -85%) scale(1.1); }
+}
+
+/* Индикатор состояния интернет-соединения (v16) */
+.network-status-banner {
+  position: fixed;
+  bottom: calc(68px + var(--safe-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(239, 68, 68, 0.94);
+  color: #ffffff;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 280;
+  pointer-events: none;
+}
+
+.network-status-banner.online-restored {
+  background: rgba(16, 185, 129, 0.95);
+}
+
+.pinned-room-badge {
+  font-size: 11.5px;
+  margin-right: 4px;
+  opacity: 0.85;
 }
 
 .section-bar {
