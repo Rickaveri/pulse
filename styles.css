@@ -991,6 +991,7 @@ input, textarea {
 .messages-viewport {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 14px 14px 10px;
   display: flex;
   flex-direction: column;
@@ -1072,7 +1073,7 @@ input, textarea {
 }
 
 .msg-bubble.pressing {
-  transform: scale(0.95);
+  transform: scale(0.94);
 }
 
 .msg-bubble.haptic-pop {
@@ -1080,8 +1081,8 @@ input, textarea {
 }
 
 @keyframes bubbleHapticPop {
-  0% { transform: scale(0.95); }
-  55% { transform: scale(1.035); }
+  0% { transform: scale(0.94); }
+  55% { transform: scale(1.04); }
   100% { transform: scale(1); }
 }
 
@@ -1682,7 +1683,7 @@ body.keyboard-open .composer {
   color: #fca5a5;
 }
 
-/* Экран аудио/видеозвонка P2P WebRTC без VPN */
+/* Экран аудио/видеозвонка P2P WebRTC без VPN с переключением Громкая / Динамик */
 .call-overlay {
   position: fixed;
   top: 0;
@@ -1694,7 +1695,7 @@ body.keyboard-open .composer {
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: calc(36px + var(--safe-top)) 24px calc(36px + var(--safe-bottom));
+  padding: calc(36px + var(--safe-top)) 20px calc(36px + var(--safe-bottom));
   z-index: 260;
   color: #fff;
 }
@@ -1741,15 +1742,30 @@ body.keyboard-open .composer {
   z-index: 4;
   display: flex;
   align-items: center;
-  gap: 16px;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.call-btn-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.call-btn-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 500;
 }
 
 .call-btn {
-  width: 58px;
-  height: 58px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
-  border: none;
-  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.14);
   color: #fff;
   font-size: 20px;
   display: flex;
@@ -1757,18 +1773,27 @@ body.keyboard-open .composer {
   justify-content: center;
   cursor: pointer;
   backdrop-filter: blur(10px);
+  transition: all 0.18s;
+}
+
+.call-btn.active-mode {
+  background: #ffffff;
+  color: #090d16;
+  border-color: #ffffff;
 }
 
 .call-btn.accept {
   background: var(--success);
-  width: 64px;
-  height: 64px;
+  border-color: transparent;
+  width: 62px;
+  height: 62px;
 }
 
 .call-btn.hangup {
   background: var(--danger);
-  width: 64px;
-  height: 64px;
+  border-color: transparent;
+  width: 62px;
+  height: 62px;
 }
 
 /* Галерея общих фотографий и файлов внутри карточки чата */

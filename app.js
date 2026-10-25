@@ -1,4 +1,4 @@
-// Pulse Messenger v13 — Тактильная вибрация (Taptic Engine iPhone + Android) при удержании и реакциях, мгновенные реакции за 0 мс (Optimistic UI), карточки истории звонков в чате с кнопкой «Перезвонить» и гудки вызова
+// Pulse Messenger v14 — Чистый звук звонков без хрипа (подавление эха и шума), переключатель «Обычный динамик / Громкая связь» в звонках, предпросмотр фото с подписью перед отправкой, свайп влево по сообщению для ответа, мгновенные реакции
 (function () {
   const LEGACY_PUBLIC_ROOM_ID = '00000000-0000-0000-0000-000000000001';
   const AVATAR_COLORS = ['#6366f1', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f59e0b', '#3b82f6'];
@@ -69,6 +69,15 @@
   const confirmLogoutBtn = document.getElementById('confirmLogoutBtn');
   const cancelLogoutBtn = document.getElementById('cancelLogoutBtn');
 
+  // DOM: Предпросмотр фото и файла с подписью перед отправкой
+  const mediaPreviewModal = document.getElementById('mediaPreviewModal');
+  const mediaPreviewTitle = document.getElementById('mediaPreviewTitle');
+  const mediaPreviewImg = document.getElementById('mediaPreviewImg');
+  const mediaPreviewFileBox = document.getElementById('mediaPreviewFileBox');
+  const mediaCaptionInput = document.getElementById('mediaCaptionInput');
+  const confirmSendMediaBtn = document.getElementById('confirmSendMediaBtn');
+  const cancelSendMediaBtn = document.getElementById('cancelSendMediaBtn');
+
   // DOM: Меню действий над сообщением, закрепление, пересылка, скачивание и удаление
   const msgActionModal = document.getElementById('msgActionModal');
   const reactEmojiBtns = Array.from(document.querySelectorAll('[data-react]'));
@@ -90,15 +99,22 @@
   const deleteForAllBtn = document.getElementById('deleteForAllBtn');
   const cancelDeleteModalBtn = document.getElementById('cancelDeleteModalBtn');
 
-  // DOM: Экран аудио/видеозвонков P2P WebRTC
+  // DOM: Экран аудио/видеозвонков P2P WebRTC с переключателем Громкая / Обычный динамик
   const callOverlay = document.getElementById('callOverlay');
+  const callRemoteAudio = document.getElementById('callRemoteAudio');
   const callVideoStage = document.getElementById('callVideoStage');
   const callRemoteVideo = document.getElementById('callRemoteVideo');
   const callLocalVideo = document.getElementById('callLocalVideo');
   const callPeerAvatar = document.getElementById('callPeerAvatar');
   const callPeerName = document.getElementById('callPeerName');
   const callStatusText = document.getElementById('callStatusText');
+  const callSpeakerBtn = document.getElementById('callSpeakerBtn');
+  const callSpeakerLabel = document.getElementById('callSpeakerLabel');
   const callMuteBtn = document.getElementById('callMuteBtn');
+  const callMuteLabel = document.getElementById('callMuteLabel');
+  const callFlipCamWrap = document.getElementById('callFlipCamWrap');
+  const callFlipCamBtn = document.getElementById('callFlipCamBtn');
+  const callAcceptWrap = document.getElementById('callAcceptWrap');
   const callAcceptBtn = document.getElementById('callAcceptBtn');
   const callHangupBtn = document.getElementById('callHangupBtn');
   const voiceCallBtn = document.getElementById('voiceCallBtn');
@@ -229,13 +245,14 @@
   let replyToMsg = null;
   let editingMsg = null;
   let selectedMsgContext = null;
+  let pendingAttachmentFile = null;
 
   const onlineUserIds = new Set();
   const typingByRoom = new Map();
   let lastTypingBroadcastAt = 0;
   let soundEnabled = localStorage.getItem('pulse_sound') !== 'off';
 
-  // ТАКТИЛЬНЫЙ ОТКЛИК И ВИБРАЦИЯ КАК В TELEGRAM (iPhone Taptic Engine + Android Vibrate + Аудио-импульс)
+  // БЕЗЗВУЧНАЯ ТАКТИЛЬНАЯ ВИБРАЦИЯ (Убран низкочастотный генератор, вызывавший хрип динамика!)
   let sharedAudioCtx = null;
   function getAudioCtx() {
     if (!sharedAudioCtx) {
@@ -249,42 +266,18 @@
   }
 
   function triggerHaptic(type = 'light') {
-    // 1. Нативный вибратор Android / поддерживаемых браузеров
     if (navigator.vibrate) {
       try {
         if (type === 'heavy') navigator.vibrate([22, 35, 18]);
-        else if (type === 'medium') navigator.vibrate(18);
-        else navigator.vibrate(10);
+        else if (type === 'medium') navigator.vibrate(16);
+        else navigator.vibrate(9);
       } catch (e) {}
     }
-
-    // 2. Нативный Taptic Engine на iPhone (iOS 17.4+ / iOS 18 switch)
     if (iosHapticLabel) {
       try {
         iosHapticLabel.click();
       } catch (e) {}
     }
-
-    // 3. Мягкий низкочастотный тактильный щелчок (65 Гц, 14 мс), ощущаемый пальцем на корпусе телефона
-    if (!soundEnabled) return;
-    try {
-      const ctx = getAudioCtx();
-      if (!ctx) return;
-      const now = ctx.currentTime;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(type === 'medium' ? 140 : 95, now);
-      osc.frequency.exponentialRampToValueAtTime(48, now + 0.018);
-
-      gain.gain.setValueAtTime(0.08, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.018);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.02);
-    } catch (e) {}
   }
 
   function getLocallyHiddenMsgIds() {
@@ -373,12 +366,11 @@
     return 'text';
   }
 
-  // Разбор карточки звонка: __CALL__|audio/video|status(missed/canceled/completed)|durationSec
   function parseCallLogMessage(content) {
     const parts = String(content || '').split('|');
     return {
       callType: parts[1] === 'video' ? 'video' : 'audio',
-      status: parts[2] || 'missed', // 'missed' | 'canceled' | 'completed' | 'declined'
+      status: parts[2] || 'missed',
       durationSec: Number(parts[3] || 0)
     };
   }
@@ -702,7 +694,14 @@
     }
     if (kind === 'voice') return '🎤 Голосовое сообщение';
     if (kind === 'video_circle') return '📹 Видеокружочек';
-    if (kind === 'image') return '📷 Фотография';
+    if (kind === 'image') {
+      if (msg.content) {
+        const dec = await decryptTextForRoom(msg.content, room);
+        const { textBody } = parseCleanMessageStruct(dec);
+        if (textBody.trim()) return `📷 ${textBody.trim()}`;
+      }
+      return '📷 Фотография';
+    }
     if (kind === 'file') return '📎 Файл';
     if (msg.content) {
       const decrypted = await decryptTextForRoom(msg.content, room);
@@ -928,8 +927,8 @@
       osc2.frequency.setValueAtTime(293.66, now);
 
       gain.gain.setValueAtTime(0.001, now);
-      gain.gain.exponentialRampToValueAtTime(0.14, now + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+      gain.gain.linearRampToValueAtTime(0.11, now + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
 
       osc1.connect(gain);
       osc2.connect(gain);
@@ -2003,7 +2002,7 @@
     syncViewportHeight();
   });
 
-  // Карточка собеседника / диалога + Галерея общих фотографий и файлов
+  // Карточка собеседника / диалога + Копирование @username/телефона + Галерея общих фотографий
   chatHeaderTrigger.addEventListener('click', (e) => {
     if (e.target.closest('#mobileBackBtn')) return;
     if (!activeRoom) return;
@@ -2076,6 +2075,20 @@
 
     peerModal.classList.remove('hidden');
   });
+
+  if (peerHandle) {
+    peerHandle.addEventListener('click', async () => {
+      const txt = peerHandle.textContent.trim();
+      if (!txt.startsWith('@')) return;
+      try {
+        await navigator.clipboard.writeText(txt);
+        peerHandle.textContent = `${txt} (Скопировано ✓)`;
+        setTimeout(() => {
+          peerHandle.textContent = txt;
+        }, 1200);
+      } catch (e) {}
+    });
+  }
 
   closePeerModalBtn.addEventListener('click', () => peerModal.classList.add('hidden'));
 
@@ -2309,7 +2322,6 @@
         bubble.appendChild(qBox);
       }
 
-      // Специальное отображение карточки звонка в истории чата!
       if (kind === 'call_log') {
         const callInfo = parseCallLogMessage(msg.content);
         const isVideoCall = callInfo.callType === 'video';
@@ -2484,17 +2496,24 @@
         myReactionEmoji: myReactionEntry ? myReactionEntry.emoji : inlineReaction
       };
 
-      // ЖЕСТЫ КАК В TELEGRAM:
-      // 1) Удержание пальцем (320 мс) — пружинящее сжатие + приятная вибрация Taptic + открытие меню
-      // 2) Двойной тап — мгновенный лайк ❤️ (за 0 мс!) с вибрацией
-      // 3) Одиночный тап — открытие меню с лёгким тактильным откликом
+      // ЖЕСТЫ СООБЩЕНИЯ:
+      // 1) Свайп влево по пузырьку — мгновенный ответ (Reply) как в Telegram!
+      // 2) Удержание (300 мс) — пружинящее сжатие + открытие меню
+      // 3) Двойной тап — мгновенный лайк ❤️ за 0 мс
+      // 4) Одиночный тап — меню действий
       let longPressTimer = null;
       let longPressFired = false;
       let clickTimeout = null;
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let swipedReply = false;
 
       bubble.addEventListener('pointerdown', (ev) => {
         if (ev.target.closest('a, button, video')) return;
         longPressFired = false;
+        swipedReply = false;
+        touchStartX = ev.clientX;
+        touchStartY = ev.clientY;
         bubble.classList.add('pressing');
         longPressTimer = setTimeout(() => {
           longPressFired = true;
@@ -2503,10 +2522,35 @@
           setTimeout(() => bubble.classList.remove('haptic-pop'), 280);
           triggerHaptic('medium');
           openMessageActionSheet(ctxPayload);
-        }, 320);
+        }, 300);
       });
 
-      const cancelLongPress = () => {
+      bubble.addEventListener('pointermove', (ev) => {
+        if (!touchStartX) return;
+        const dx = ev.clientX - touchStartX;
+        const dy = Math.abs(ev.clientY - touchStartY);
+        if (Math.abs(dx) > 10 || dy > 10) {
+          bubble.classList.remove('pressing');
+          if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+          }
+        }
+        // Свайп влево для быстрого ответа
+        if (dx < -15 && dy < 30) {
+          const offset = Math.max(-55, dx);
+          bubble.style.transform = `translateX(${offset}px)`;
+          if (dx <= -42 && !swipedReply) {
+            swipedReply = true;
+            triggerHaptic('medium');
+            setReplyMessage(msg, senderName, textBody);
+          }
+        }
+      });
+
+      const finishPointer = () => {
+        touchStartX = 0;
+        bubble.style.transform = '';
         bubble.classList.remove('pressing');
         if (longPressTimer) {
           clearTimeout(longPressTimer);
@@ -2514,14 +2558,14 @@
         }
       };
 
-      bubble.addEventListener('pointerup', cancelLongPress);
-      bubble.addEventListener('pointercancel', cancelLongPress);
-      bubble.addEventListener('pointermove', cancelLongPress);
+      bubble.addEventListener('pointerup', finishPointer);
+      bubble.addEventListener('pointercancel', finishPointer);
 
       bubble.addEventListener('click', (ev) => {
         if (ev.target.closest('a, button')) return;
-        if (longPressFired) {
+        if (longPressFired || swipedReply) {
           longPressFired = false;
+          swipedReply = false;
           return;
         }
         if (clickTimeout) {
@@ -2552,7 +2596,7 @@
     }
   }
 
-  // МГНОВЕННАЯ РЕАКЦИЯ ЗА 0 МС (Optimistic UI Update + Тактильная вибрация!)
+  // МГНОВЕННАЯ РЕАКЦИЯ ЗА 0 МС (Optimistic UI Update!)
   async function toggleReactionOnMessage({ msg, emoji, myReactionPacketId, myReactionEmoji }) {
     if (!activeRoom || !msg) return;
     triggerHaptic('medium');
@@ -2560,7 +2604,6 @@
     const roomId = activeRoom.id;
     const isRemoving = myReactionEmoji === emoji;
 
-    // 1. Мгновенно обновляем локальный массив сообщений и перерисовываем экран за 0 миллисекунд!
     if (myReactionPacketId) {
       roomMessages = roomMessages.filter((m) => m.id !== myReactionPacketId);
     }
@@ -2579,7 +2622,6 @@
     roomMessagesCache.set(roomId, roomMessages);
     await renderMessages(roomId);
 
-    // 2. В фоне синхронизируем с базой данных Supabase
     try {
       if (myReactionPacketId && !String(myReactionPacketId).startsWith('optimistic_')) {
         await supabaseClient.from('messages').delete().eq('id', myReactionPacketId);
@@ -2922,7 +2964,7 @@
 
   cancelReplyBtn.addEventListener('click', clearComposerState);
 
-  // 12. Умная кнопка 3-в-1 + Мгновенная отправка сообщений (Optimistic UI)
+  // 12. Умная кнопка 3-в-1 + Мгновенная отправка сообщений + Предпросмотр фото с подписью
   function updateSmartActionButtonUI() {
     const hasText = messageInput.value.trim().length > 0;
 
@@ -2997,7 +3039,6 @@
     const roomSnapshot = activeRoom;
     const encrypted = await encryptTextForRoom(finalPlain, roomSnapshot);
 
-    // Мгновенно добавляем своё сообщение на экран (0 мс ожидания!)
     const tempId = `optimistic_msg_${Date.now()}`;
     const optimisticRow = {
       id: tempId,
@@ -3060,45 +3101,83 @@
     attachmentInput.click();
   });
 
-  attachmentInput.addEventListener('change', async (e) => {
+  // Предпросмотр фото или файла перед отправкой + возможность добавить подпись!
+  attachmentInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file || !activeRoom) return;
     attachmentInput.value = '';
 
-    const isImg = file.type.startsWith('image/');
-    try {
-      let uploadBlob = file;
-      let ext = (file.name.split('.').pop() || 'bin').toLowerCase();
-      let contentType = file.type || 'application/octet-stream';
+    pendingAttachmentFile = file;
+    mediaCaptionInput.value = '';
 
-      if (isImg) {
-        uploadBlob = await compressImage(file, 1280, 0.84);
-        ext = 'jpg';
-        contentType = 'image/jpeg';
-      }
-
-      const prefix = isImg ? 'img' : 'file';
-      const path = `${activeRoom.id}/${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
-      const { error: upErr } = await supabaseClient.storage
-        .from('chat-media')
-        .upload(path, uploadBlob, { contentType });
-      if (upErr) throw upErr;
-
-      const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-      const captionEncrypted = isImg ? '' : await encryptTextForRoom(file.name, activeRoom);
-
-      const { error } = await insertMessageRow({
-        room_id: activeRoom.id,
-        content: captionEncrypted,
-        media_url: pub.publicUrl,
-        media_type: isImg ? 'image' : 'text'
-      });
-      if (error) throw error;
-      await loadMessages(activeRoom.id);
-    } catch (err) {
-      alert('Ошибка отправки файла: ' + (err.message || err));
+    if (file.type.startsWith('image/')) {
+      mediaPreviewTitle.textContent = 'Отправить фотографию';
+      mediaPreviewImg.src = URL.createObjectURL(file);
+      mediaPreviewImg.classList.remove('hidden');
+      mediaPreviewFileBox.classList.add('hidden');
+    } else {
+      mediaPreviewTitle.textContent = 'Отправить файл';
+      mediaPreviewImg.classList.add('hidden');
+      mediaPreviewFileBox.textContent = `📎 ${file.name}`;
+      mediaPreviewFileBox.classList.remove('hidden');
     }
+
+    mediaPreviewModal.classList.remove('hidden');
+    setTimeout(() => mediaCaptionInput.focus(), 80);
   });
+
+  if (cancelSendMediaBtn) {
+    cancelSendMediaBtn.addEventListener('click', () => {
+      pendingAttachmentFile = null;
+      mediaPreviewModal.classList.add('hidden');
+    });
+  }
+
+  if (confirmSendMediaBtn) {
+    confirmSendMediaBtn.addEventListener('click', async () => {
+      if (!pendingAttachmentFile || !activeRoom) return;
+      const file = pendingAttachmentFile;
+      const captionText = mediaCaptionInput.value.trim();
+      pendingAttachmentFile = null;
+      mediaPreviewModal.classList.add('hidden');
+      triggerHaptic('medium');
+
+      const isImg = file.type.startsWith('image/');
+      try {
+        let uploadBlob = file;
+        let ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+        let contentType = file.type || 'application/octet-stream';
+
+        if (isImg) {
+          uploadBlob = await compressImage(file, 1280, 0.84);
+          ext = 'jpg';
+          contentType = 'image/jpeg';
+        }
+
+        const prefix = isImg ? 'img' : 'file';
+        const path = `${activeRoom.id}/${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+        const { error: upErr } = await supabaseClient.storage
+          .from('chat-media')
+          .upload(path, uploadBlob, { contentType });
+        if (upErr) throw upErr;
+
+        const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+        const textToEncrypt = isImg ? captionText : (captionText || file.name);
+        const captionEncrypted = textToEncrypt ? await encryptTextForRoom(textToEncrypt, activeRoom) : '';
+
+        const { error } = await insertMessageRow({
+          room_id: activeRoom.id,
+          content: captionEncrypted,
+          media_url: pub.publicUrl,
+          media_type: isImg ? 'image' : 'text'
+        });
+        if (error) throw error;
+        await loadMessages(activeRoom.id);
+      } catch (err) {
+        alert('Ошибка отправки файла: ' + (err.message || err));
+      }
+    });
+  }
 
   smartActionBtn.addEventListener('pointerdown', (e) => {
     e.preventDefault();
@@ -3182,7 +3261,9 @@
       return cachedAudioStream;
     }
 
-    cachedAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    cachedAudioStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
     return cachedAudioStream;
   }
 
@@ -3194,7 +3275,7 @@
 
       const stream = isVideo
         ? await navigator.mediaDevices.getUserMedia({
-            audio: true,
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
             video: { facingMode: cameraFacingMode, width: { ideal: 480 }, height: { ideal: 480 } }
           })
         : await acquireVoiceStreamOnce();
@@ -3334,7 +3415,7 @@
       }
 
       const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: { facingMode: cameraFacingMode, width: { ideal: 480 }, height: { ideal: 480 } }
       });
 
@@ -3402,11 +3483,13 @@
     updateSmartActionButtonUI();
   }
 
-  // 12.5. АУДИО- И ВИДЕОЗВОНКИ БЕЗ VPN (с гудками вызова и карточками звонков в переписке!)
+  // 12.5. АУДИО- И ВИДЕОЗВОНКИ БЕЗ VPN (с чистым звуком без хрипа и переключателем «Динамик / Громкая связь»!)
   let rtcPeerConnection = null;
   let localCallStream = null;
-  let activeCallState = null; // { peerId, roomId, isVideo, isOutgoing, incomingOffer, callStartTime, timerId, ringTimerId, logged }
+  let activeCallState = null;
   let isCallMuted = false;
+  let isSpeakerphoneOn = false; // По умолчанию в аудиозвонках выключена громкая связь (режим обычного телефонного динамика)
+  let callFacingMode = 'user';
 
   const RTC_CONFIG = {
     iceServers: [
@@ -3415,8 +3498,49 @@
     ]
   };
 
-  // Звук гудков при исходящем или входящем звонке
-  function playCallTone(isIncoming) {
+  // Применение режима «Обычный динамик (Тихо / у уха)» vs «Громкая связь»
+  async function applySpeakerMode(speakerOn) {
+    isSpeakerphoneOn = Boolean(speakerOn);
+    if (callSpeakerBtn) {
+      callSpeakerBtn.textContent = isSpeakerphoneOn ? '🔊' : '🔈';
+      callSpeakerBtn.classList.toggle('active-mode', isSpeakerphoneOn);
+    }
+    if (callSpeakerLabel) {
+      callSpeakerLabel.textContent = isSpeakerphoneOn ? 'Громкая' : 'Динамик';
+    }
+
+    const targetVolume = isSpeakerphoneOn ? 1.0 : 0.26;
+    if (callRemoteAudio) callRemoteAudio.volume = targetVolume;
+    if (callRemoteVideo) callRemoteVideo.volume = targetVolume;
+
+    // Если браузер поддерживает выбор аудиовыхода (setSinkId), выбираем спикерфон или наушники/динамик
+    const mediaEl = activeCallState && activeCallState.isVideo ? callRemoteVideo : callRemoteAudio;
+    if (mediaEl && typeof mediaEl.setSinkId === 'function' && navigator.mediaDevices?.enumerateDevices) {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const outputs = devices.filter((d) => d.kind === 'audiooutput');
+        if (outputs.length > 1) {
+          const speakerDev = outputs.find((d) => /speaker|громк/i.test(d.label));
+          const receiverDev = outputs.find((d) => /receiver|earpiece|headphone|airpods/i.test(d.label));
+          if (isSpeakerphoneOn && speakerDev) {
+            await mediaEl.setSinkId(speakerDev.deviceId);
+          } else if (!isSpeakerphoneOn && receiverDev) {
+            await mediaEl.setSinkId(receiverDev.deviceId);
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (callSpeakerBtn) {
+    callSpeakerBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      applySpeakerMode(!isSpeakerphoneOn);
+    });
+  }
+
+  // Чистый мягкий телефонный гудок без искажений и хрипа (плавная огибающая синусоиды 440 Гц)
+  function playCleanDialTone(isIncoming) {
     if (!soundEnabled) return;
     try {
       const ctx = getAudioCtx();
@@ -3424,30 +3548,33 @@
       const now = ctx.currentTime;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
+
       osc.type = 'sine';
+      osc.frequency.setValueAtTime(isIncoming ? 523.25 : 440, now);
       if (isIncoming) {
-        osc.frequency.setValueAtTime(523.25, now);
-        osc.frequency.setValueAtTime(659.25, now + 0.18);
-      } else {
-        // Классический телефонный гудок 425 Гц
-        osc.frequency.setValueAtTime(425, now);
+        osc.frequency.setValueAtTime(659.25, now + 0.16);
       }
-      gain.gain.setValueAtTime(0.001, now);
-      gain.gain.exponentialRampToValueAtTime(0.11, now + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+      // Плавное нарастание и плавный спад в ноль — полностью исключает щелчки и хрип динамика!
+      const maxGain = isSpeakerphoneOn ? 0.065 : 0.025;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(maxGain, now + 0.04);
+      gain.gain.setValueAtTime(maxGain, now + 0.32);
+      gain.gain.linearRampToValueAtTime(0.0001, now + 0.42);
+
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(now);
-      osc.stop(now + 0.46);
+      osc.stop(now + 0.44);
     } catch (e) {}
   }
 
   function startCallRingingLoop(isIncoming) {
-    playCallTone(isIncoming);
+    playCleanDialTone(isIncoming);
     return setInterval(() => {
-      playCallTone(isIncoming);
+      playCleanDialTone(isIncoming);
       if (isIncoming) triggerHaptic('medium');
-    }, 2200);
+    }, 2400);
   }
 
   function stopCallRingingLoop() {
@@ -3466,7 +3593,8 @@
     });
     callPeerName.textContent = peer ? peer.display_name : 'Собеседник';
     callStatusText.textContent = statusMsg;
-    callAcceptBtn.classList.toggle('hidden', !showAccept);
+    if (callAcceptWrap) callAcceptWrap.classList.toggle('hidden', !showAccept);
+    if (callFlipCamWrap) callFlipCamWrap.classList.toggle('hidden', !isVideo);
     callVideoStage.classList.toggle('hidden', !isVideo);
     callOverlay.classList.remove('hidden');
   }
@@ -3477,11 +3605,19 @@
     if (!pres.peer) return;
 
     triggerHaptic('medium');
+    callFacingMode = 'user';
+
+    // Аудиозвонок начинается на обычном тихом динамике (не на громкой!), а видеозвонок — на громкой
+    await applySpeakerMode(Boolean(isVideo));
 
     try {
       localCallStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: isVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
+        video: isVideo ? { facingMode: callFacingMode, width: { ideal: 640 }, height: { ideal: 480 } } : false
       });
 
       if (isVideo && callLocalVideo) {
@@ -3501,18 +3637,19 @@
         logged: false
       };
       isCallMuted = false;
-      callMuteBtn.style.opacity = '1';
+      callMuteBtn.classList.remove('active-mode');
+      if (callMuteLabel) callMuteLabel.textContent = 'Микрофон';
 
       setupCallOverlayUI(
         pres.peer,
         peerOnline
-          ? (isVideo ? 'Идёт видеовызов (собеседник в сети)...' : 'Идёт вызов (собеседник в сети)...')
-          : 'Вызов... (собеседник сейчас не в сети — останется уведомление о звонке)',
+          ? (isVideo ? 'Видеовызов (в сети)...' : 'Аудиовызов (в сети)...')
+          : 'Вызов... (собеседник не в сети — останется уведомление)',
         false,
         isVideo
       );
 
-      rtcPeerConnection = createRtcPeerConnection(pres.peer.id);
+      rtcPeerConnection = createRtcPeerConnection(pres.peer.id, isVideo);
       localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
 
       const offer = await rtcPeerConnection.createOffer();
@@ -3536,7 +3673,7 @@
     }
   }
 
-  function createRtcPeerConnection(targetPeerId) {
+  function createRtcPeerConnection(targetPeerId, isVideo) {
     const pc = new RTCPeerConnection(RTC_CONFIG);
 
     pc.onicecandidate = (event) => {
@@ -3555,8 +3692,15 @@
     };
 
     pc.ontrack = (event) => {
-      if (callRemoteVideo && event.streams && event.streams[0]) {
-        callRemoteVideo.srcObject = event.streams[0];
+      const stream = event.streams && event.streams[0];
+      if (!stream) return;
+      if (isVideo && callRemoteVideo) {
+        callRemoteVideo.srcObject = stream;
+        callRemoteVideo.volume = isSpeakerphoneOn ? 1.0 : 0.26;
+      } else if (callRemoteAudio) {
+        // Для аудиозвонка выводим звук через <audio>, чтобы iOS не принуждал громкую связь видеоплеера!
+        callRemoteAudio.srcObject = stream;
+        callRemoteAudio.volume = isSpeakerphoneOn ? 1.0 : 0.26;
       }
     };
 
@@ -3585,11 +3729,13 @@
     if (payload.type === 'offer') {
       if (activeCallState) return;
       triggerHaptic('heavy');
+      const isVid = Boolean(payload.is_video);
+      await applySpeakerMode(isVid);
 
       activeCallState = {
         peerId: payload.from_id,
         roomId: payload.room_id,
-        isVideo: Boolean(payload.is_video),
+        isVideo: isVid,
         isOutgoing: false,
         incomingOffer: payload.sdp,
         callStartTime: 0,
@@ -3600,14 +3746,14 @@
 
       setupCallOverlayUI(
         caller,
-        payload.is_video ? 'Входящий видеозвонок...' : 'Входящий аудиозвонок...',
+        isVid ? 'Входящий видеозвонок...' : 'Входящий аудиозвонок...',
         true,
-        Boolean(payload.is_video)
+        isVid
       );
 
       sendSystemNotification(
         caller ? caller.display_name : 'Входящий звонок',
-        payload.is_video ? '📹 Входящий видеозвонок в Pulse' : '📞 Входящий аудиозвонок в Pulse',
+        isVid ? '📹 Входящий видеозвонок в Pulse' : '📞 Входящий аудиозвонок в Pulse',
         payload.room_id
       );
     } else if (payload.type === 'answer' && rtcPeerConnection) {
@@ -3629,11 +3775,15 @@
       triggerHaptic('medium');
       stopCallRingingLoop();
       try {
-        callAcceptBtn.classList.add('hidden');
+        if (callAcceptWrap) callAcceptWrap.classList.add('hidden');
         callStatusText.textContent = 'Подключение...';
 
         localCallStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
           video: activeCallState.isVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
         });
 
@@ -3641,7 +3791,7 @@
           callLocalVideo.srcObject = localCallStream;
         }
 
-        rtcPeerConnection = createRtcPeerConnection(activeCallState.peerId);
+        rtcPeerConnection = createRtcPeerConnection(activeCallState.peerId, activeCallState.isVideo);
         localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
 
         await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(activeCallState.incomingOffer));
@@ -3665,7 +3815,35 @@
     });
   }
 
-  // Завершение звонка + автоматическая запись карточки звонка в историю чата!
+  // Переключение фронтальной и основной камеры прямо во время видеозвонка
+  if (callFlipCamBtn) {
+    callFlipCamBtn.addEventListener('click', async () => {
+      if (!activeCallState || !activeCallState.isVideo || !localCallStream) return;
+      triggerHaptic('light');
+      callFacingMode = callFacingMode === 'user' ? 'environment' : 'user';
+      try {
+        const newVidStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: callFacingMode, width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+        const newVideoTrack = newVidStream.getVideoTracks()[0];
+        const oldVideoTrack = localCallStream.getVideoTracks()[0];
+        if (oldVideoTrack) {
+          localCallStream.removeTrack(oldVideoTrack);
+          oldVideoTrack.stop();
+        }
+        localCallStream.addTrack(newVideoTrack);
+        if (callLocalVideo) {
+          callLocalVideo.srcObject = localCallStream;
+          callLocalVideo.style.transform = callFacingMode === 'user' ? 'scaleX(-1)' : 'none';
+        }
+        if (rtcPeerConnection) {
+          const sender = rtcPeerConnection.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) await sender.replaceTrack(newVideoTrack);
+        }
+      } catch (e) {}
+    });
+  }
+
   async function endActiveCall(notifyPeer = true) {
     stopCallRingingLoop();
     const stateSnapshot = activeCallState;
@@ -3682,6 +3860,7 @@
       localCallStream.getTracks().forEach((t) => t.stop());
       localCallStream = null;
     }
+    if (callRemoteAudio) callRemoteAudio.srcObject = null;
     if (callRemoteVideo) callRemoteVideo.srcObject = null;
     if (callLocalVideo) callLocalVideo.srcObject = null;
     if (callOverlay) callOverlay.classList.add('hidden');
@@ -3700,8 +3879,6 @@
       });
     }
 
-    // Если звонок инициировали мы (isOutgoing), записываем карточку звонка в историю переписки,
-    // чтобы и у нас, и у Артёма в чате осталась плашка о звонке и пришло Push-уведомление!
     if (stateSnapshot.isOutgoing && !stateSnapshot.logged && stateSnapshot.roomId) {
       stateSnapshot.logged = true;
       const durSec = stateSnapshot.callStartTime
@@ -3742,16 +3919,19 @@
       localCallStream.getAudioTracks().forEach((t) => {
         t.enabled = !isCallMuted;
       });
-      callMuteBtn.style.opacity = isCallMuted ? '0.45' : '1';
+      callMuteBtn.classList.toggle('active-mode', isCallMuted);
+      if (callMuteLabel) {
+        callMuteLabel.textContent = isCallMuted ? 'Выключен' : 'Микрофон';
+      }
     });
   }
 
-  // 13. Realtime-подписка: мгновенные сообщения, звонки, уведомления и регистрация новых друзей
+  // 13. Realtime-подписка
   function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
 
     realtimeChannel = supabaseClient
-      .channel('pulse-live-v13', {
+      .channel('pulse-live-v14', {
         config: { presence: { key: currentUser.id } }
       })
       .on('presence', { event: 'sync' }, () => {
@@ -3897,7 +4077,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=13').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=14').catch(() => {});
     });
   }
 

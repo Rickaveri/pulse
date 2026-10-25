@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=13" />
+  <link rel="stylesheet" href="./styles.css?v=14" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=13"></script>
+  <script src="./config.js?v=14"></script>
 </head>
 <body>
 
@@ -182,6 +182,23 @@
     </div>
   </div>
 
+  <!-- Модальное окно предпросмотра фото и добавления подписи перед отправкой (как в Telegram) -->
+  <div id="mediaPreviewModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:380px; text-align:center;">
+      <h2 id="mediaPreviewTitle" style="font-size:18px; margin-bottom:10px;">Отправить фото</h2>
+      <div style="margin-bottom:12px; border-radius:14px; overflow:hidden; background:var(--bg-input); max-height:260px; display:flex; align-items:center; justify-content:center;">
+        <img id="mediaPreviewImg" src="" alt="Предпросмотр" style="max-width:100%; max-height:250px; object-fit:contain;" />
+        <div id="mediaPreviewFileBox" class="hidden" style="padding:22px; font-size:14px; font-weight:600;"></div>
+      </div>
+      <div class="field-group" style="text-align:left;">
+        <label for="mediaCaptionInput">Подпись к вложению (необязательно)</label>
+        <input id="mediaCaptionInput" class="input-field" type="text" placeholder="Добавить подпись..." autocomplete="off" />
+      </div>
+      <button id="confirmSendMediaBtn" class="btn-primary" type="button">Отправить</button>
+      <button id="cancelSendMediaBtn" class="btn-ghost" type="button">Отмена</button>
+    </div>
+  </div>
+
   <!-- Модальное окно подтверждения выхода из аккаунта -->
   <div id="logoutConfirmModal" class="modal-backdrop hidden">
     <div class="auth-card" style="max-width:340px; text-align:center;">
@@ -260,8 +277,11 @@
     </div>
   </div>
 
-  <!-- Экран P2P аудио/видеозвонка без VPN (WebRTC) -->
+  <!-- Экран P2P аудио/видеозвонка без VPN (WebRTC) с переключением Громкая / Обычный динамик и Камеры -->
   <div id="callOverlay" class="call-overlay hidden">
+    <!-- Отдельный аудиоэлемент для чистого звука без принудительного включения громкой связи iOS -->
+    <audio id="callRemoteAudio" autoplay playsinline></audio>
+
     <div id="callVideoStage" class="call-video-stage hidden">
       <video id="callRemoteVideo" class="call-remote-video" autoplay playsinline></video>
       <video id="callLocalVideo" class="call-local-video" autoplay muted playsinline></video>
@@ -274,9 +294,30 @@
     </div>
 
     <div class="call-controls-bar">
-      <button id="callMuteBtn" class="call-btn" type="button" title="Вкл/Выкл микрофон">🎤</button>
-      <button id="callAcceptBtn" class="call-btn accept hidden" type="button" title="Ответить на звонок">📞</button>
-      <button id="callHangupBtn" class="call-btn hangup" type="button" title="Завершить звонок">📵</button>
+      <div class="call-btn-wrap">
+        <button id="callSpeakerBtn" class="call-btn" type="button" title="Переключить: Обычный динамик / Громкая связь">🔈</button>
+        <span id="callSpeakerLabel" class="call-btn-label">Динамик</span>
+      </div>
+
+      <div class="call-btn-wrap">
+        <button id="callMuteBtn" class="call-btn" type="button" title="Вкл/Выкл микрофон">🎤</button>
+        <span id="callMuteLabel" class="call-btn-label">Микрофон</span>
+      </div>
+
+      <div id="callFlipCamWrap" class="call-btn-wrap hidden">
+        <button id="callFlipCamBtn" class="call-btn" type="button" title="Перевернуть камеру">🔄</button>
+        <span class="call-btn-label">Камера</span>
+      </div>
+
+      <div id="callAcceptWrap" class="call-btn-wrap hidden">
+        <button id="callAcceptBtn" class="call-btn accept" type="button" title="Ответить на звонок">📞</button>
+        <span class="call-btn-label">Ответить</span>
+      </div>
+
+      <div class="call-btn-wrap">
+        <button id="callHangupBtn" class="call-btn hangup" type="button" title="Завершить звонок">📵</button>
+        <span class="call-btn-label">Сбросить</span>
+      </div>
     </div>
   </div>
 
@@ -332,8 +373,8 @@
     <div class="auth-card" style="text-align:center;">
       <div id="peerAvatar" class="avatar" style="width:72px; height:72px; font-size:26px; margin:0 auto 12px;">П</div>
       <h2 id="peerName" style="font-size:19px;">Имя</h2>
-      <p id="peerHandle" style="color:var(--accent); font-size:14px; font-weight:600; margin-top:4px;">@username</p>
-      <p id="peerPhone" style="color:var(--text-muted); font-size:13px; margin-top:6px;"></p>
+      <p id="peerHandle" style="color:var(--accent); font-size:14px; font-weight:600; margin-top:4px; cursor:pointer;" title="Нажмите, чтобы скопировать">@username</p>
+      <p id="peerPhone" style="color:var(--text-muted); font-size:13px; margin-top:6px; cursor:pointer;" title="Нажмите, чтобы скопировать"></p>
       <p id="peerBio" class="hidden" style="color:var(--text-main); font-size:13.5px; margin-top:10px; padding:10px; background:var(--bg-input); border-radius:10px;"></p>
 
       <div id="sharedMediaSection" class="settings-section" style="text-align:left;">
@@ -543,6 +584,6 @@
     <img id="lightboxImg" src="" alt="Фото" />
   </div>
 
-  <script src="./app.js?v=13"></script>
+  <script src="./app.js?v=14"></script>
 </body>
 </html>
