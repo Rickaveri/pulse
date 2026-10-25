@@ -4075,9 +4075,343 @@
       .replace(/"/g, '&quot;');
   }
 
+  // =========================================================================
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v15:
+  // 1) Сворачивание активного звонка в компактную верхнюю панель (Mini Call Bar)
+  // 2) Живой индикатор голоса собеседника в звонке (Speaking Ring)
+  // 3) Вкладки-фильтры диалогов (Все / Непрочитанные / Личные / Группы)
+  // 4) Свайп вправо от левого края экрана на телефоне для возврата к списку чатов
+  // 5) Форматирование текста (**жирный**, *курсив*, `код`, ~~зачёркнутый~~), группировка пузырей и переход по цитате
+  // 6) Полноэкранный просмотр фото с зумом и скачиванием в 1 клик
+  // =========================================================================
+  const callMinimizeBtn = document.getElementById('callMinimizeBtn');
+  const miniCallBar = document.getElementById('miniCallBar');
+  const miniCallRestoreArea = document.getElementById('miniCallRestoreArea');
+  const miniCallText = document.getElementById('miniCallText');
+  const miniCallHangupBtn = document.getElementById('miniCallHangupBtn');
+  const chatFilterTabs = document.getElementById('chatFilterTabs');
+  const filterUnreadCount = document.getElementById('filterUnreadCount');
+
+  let isCallMinimized = false;
+  let activeSidebarCategory = 'all';
+
+  // 1. Свёрнутый режим звонка (Mini Call Bar) — общайтесь в чатах прямо во время звонка
+  if (callMinimizeBtn && miniCallBar && callOverlay) {
+    callMinimizeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      triggerHaptic('light');
+      isCallMinimized = true;
+      callOverlay.classList.add('hidden');
+      miniCallBar.classList.remove('hidden');
+      const peerLabel = callPeerName ? callPeerName.textContent : 'Собеседник';
+      const statusLabel = callStatusText ? callStatusText.textContent : 'В звонке';
+      if (miniCallText) {
+        miniCallText.textContent = `📞 ${peerLabel} • ${statusLabel} (нажмите, чтобы открыть)`;
+      }
+    });
+
+    if (miniCallRestoreArea) {
+      miniCallRestoreArea.addEventListener('click', () => {
+        triggerHaptic('light');
+        isCallMinimized = false;
+        miniCallBar.classList.add('hidden');
+        callOverlay.classList.remove('hidden');
+      });
+    }
+
+    if (miniCallHangupBtn && callHangupBtn) {
+      miniCallHangupBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerHaptic('medium');
+        isCallMinimized = false;
+        miniCallBar.classList.add('hidden');
+        callHangupBtn.click();
+      });
+    }
+
+    if (callHangupBtn) {
+      callHangupBtn.addEventListener('click', () => {
+        isCallMinimized = false;
+        miniCallBar.classList.add('hidden');
+      });
+    }
+
+    setInterval(() => {
+      if (!isCallMinimized) return;
+      const hasStream =
+        (callRemoteAudio && callRemoteAudio.srcObject) ||
+        (callRemoteVideo && callRemoteVideo.srcObject) ||
+        (callLocalVideo && callLocalVideo.srcObject);
+      const statusStr = callStatusText ? callStatusText.textContent : '';
+      if (!hasStream && (!statusStr || statusStr.includes('Заверш'))) {
+        isCallMinimized = false;
+        miniCallBar.classList.add('hidden');
+        return;
+      }
+      if (miniCallText) {
+        const peerLabel = callPeerName ? callPeerName.textContent : 'Собеседник';
+        miniCallText.textContent = `📞 ${peerLabel} • ${statusStr || 'Идёт разговор'}`;
+      }
+    }, 800);
+  }
+
+  // 2. Живой индикатор голосовой активности собеседника (пульсирующее зелёное кольцо вокруг аватарки)
+  let remoteVoiceAnalyser = null;
+  let remoteVoiceSourceStream = null;
+  let remoteVoiceDataArray = null;
+
+  setInterval(() => {
+    if (!callPeerAvatar) return;
+    const stream =
+      (callRemoteAudio && callRemoteAudio.srcObject) ||
+      (callRemoteVideo && callRemoteVideo.srcObject) ||
+      null;
+
+    if (!stream || (callOverlay && callOverlay.classList.contains('hidden') && !isCallMinimized)) {
+      callPeerAvatar.classList.remove('speaking');
+      return;
+    }
+
+    if (stream !== remoteVoiceSourceStream) {
+      try {
+        const ctx = getAudioCtx();
+        if (ctx && stream.getAudioTracks && stream.getAudioTracks().length > 0) {
+          remoteVoiceSourceStream = stream;
+          const src = ctx.createMediaStreamSource(stream);
+          remoteVoiceAnalyser = ctx.createAnalyser();
+          remoteVoiceAnalyser.fftSize = 128;
+          src.connect(remoteVoiceAnalyser);
+          remoteVoiceDataArray = new Uint8Array(remoteVoiceAnalyser.frequencyBinCount);
+        }
+      } catch (e) {}
+    }
+
+    if (remoteVoiceAnalyser && remoteVoiceDataArray) {
+      try {
+        remoteVoiceAnalyser.getByteFrequencyData(remoteVoiceDataArray);
+        let sum = 0;
+        for (let i = 0; i < 24; i++) sum += remoteVoiceDataArray[i];
+        const avg = sum / 24;
+        callPeerAvatar.classList.toggle('speaking', avg > 18);
+      } catch (e) {}
+    }
+  }, 140);
+
+  // 3. Вкладки-фильтры диалогов (Все / Непрочитанные / Личные / Группы)
+  function applyChatListFilter() {
+    if (!chatList) return;
+    let totalUnreadRooms = 0;
+    unreadCounts.forEach((cnt) => {
+      if (cnt > 0) totalUnreadRooms += cnt;
+    });
+    if (filterUnreadCount) {
+      filterUnreadCount.textContent = String(totalUnreadRooms);
+      filterUnreadCount.classList.toggle('hidden', totalUnreadRooms === 0);
+    }
+
+    const q = searchInput ? searchInput.value.trim() : '';
+    if (q) return;
+
+    const items = Array.from(chatList.querySelectorAll('.chat-item'));
+    items.forEach((item) => {
+      const hasUnreadBadge = !!item.querySelector('.unread-badge');
+      const titleEl = item.querySelector('.chat-item-title, .chat-item-name');
+      const titleText = titleEl ? titleEl.textContent.trim() : '';
+      const matchedRoom = myRooms.find((r) => {
+        if (r.is_group && r.name === titleText) return true;
+        return false;
+      });
+      const isGroupItem = !!matchedRoom || titleText.includes('Группа');
+
+      let visible = true;
+      if (activeSidebarCategory === 'unread') {
+        visible = hasUnreadBadge;
+      } else if (activeSidebarCategory === 'group') {
+        visible = isGroupItem;
+      } else if (activeSidebarCategory === 'dm') {
+        visible = !isGroupItem;
+      }
+      item.style.display = visible ? '' : 'none';
+    });
+  }
+
+  if (chatFilterTabs) {
+    const tabBtns = Array.from(chatFilterTabs.querySelectorAll('[data-chat-filter]'));
+    tabBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        triggerHaptic('light');
+        activeSidebarCategory = btn.getAttribute('data-chat-filter') || 'all';
+        tabBtns.forEach((b) => b.classList.toggle('active', b === btn));
+        applyChatListFilter();
+      });
+    });
+
+    if (chatList && 'MutationObserver' in window) {
+      const listObs = new MutationObserver(() => {
+        applyChatListFilter();
+      });
+      listObs.observe(chatList, { childList: true });
+    }
+  }
+
+  // 4. Свайп вправо от левого края экрана для быстрого возврата из чата к списку диалогов (iOS жест)
+  if (activeChatView && mobileBackBtn) {
+    let edgeStartX = 0;
+    let edgeStartY = 0;
+    let isEdgeSwiping = false;
+
+    activeChatView.addEventListener('touchstart', (e) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (t.clientX <= 34) {
+        edgeStartX = t.clientX;
+        edgeStartY = t.clientY;
+        isEdgeSwiping = true;
+      } else {
+        isEdgeSwiping = false;
+      }
+    }, { passive: true });
+
+    activeChatView.addEventListener('touchend', (e) => {
+      if (!isEdgeSwiping || !e.changedTouches || e.changedTouches.length === 0) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - edgeStartX;
+      const dy = Math.abs(t.clientY - edgeStartY);
+      isEdgeSwiping = false;
+      if (dx > 72 && dy < 55) {
+        triggerHaptic('light');
+        mobileBackBtn.click();
+      }
+    }, { passive: true });
+  }
+
+  // 5. Форматирование текста (**жирный**, *курсив*, `код`, ~~зачёркнутый~~), группировка пузырей и переход по цитате
+  function enhanceRenderedMessages() {
+    if (!messagesViewport) return;
+    const rows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
+    let prevSenderClass = '';
+
+    rows.forEach((row) => {
+      const curClass = row.classList.contains('own') || row.classList.contains('mine') ? 'own' : 'other';
+      const prevEl = row.previousElementSibling;
+      const isConsecutiveSameSide =
+        prevEl &&
+        prevEl.classList.contains('msg-row') &&
+        curClass === prevSenderClass;
+
+      row.classList.toggle('grouped-prev', !!isConsecutiveSameSide);
+      if (isConsecutiveSameSide && curClass === 'other') {
+        const authorEl = row.querySelector('.msg-author');
+        if (authorEl) authorEl.style.display = 'none';
+      }
+      prevSenderClass = curClass;
+
+      // Клик по цитате ответа прокручивает чат к исходному сообщению
+      const quoteEl = row.querySelector('.msg-reply-quote');
+      if (quoteEl && !quoteEl.dataset.quoteBound) {
+        quoteEl.dataset.quoteBound = '1';
+        quoteEl.style.cursor = 'pointer';
+        quoteEl.title = 'Нажмите, чтобы перейти к цитируемому сообщению';
+        quoteEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          triggerHaptic('light');
+          const rawQuote = quoteEl.textContent.replace(/^↩\s*/, '').trim();
+          const snippet = rawQuote.includes(':') ? rawQuote.split(':').slice(1).join(':').trim() : rawQuote;
+          if (!snippet) return;
+          const targetRow = rows.find((r) => r !== row && r.textContent.includes(snippet.slice(0, 24)));
+          if (targetRow) {
+            targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const targetBubble = targetRow.querySelector('.msg-bubble');
+            if (targetBubble) {
+              targetBubble.classList.add('highlight-flash');
+              setTimeout(() => targetBubble.classList.remove('highlight-flash'), 1600);
+            }
+          }
+        });
+      }
+
+      // Безопасное форматирование Markdown в текстовых узлах пузыря
+      const bubble = row.querySelector('.msg-bubble');
+      if (bubble && !bubble.dataset.mdFormatted) {
+        bubble.dataset.mdFormatted = '1';
+        Array.from(bubble.childNodes).forEach((node) => {
+          if (node.nodeType === Node.TEXT_NODE && node.nodeValue && /[*`~]/.test(node.nodeValue)) {
+            const safe = node.nodeValue
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;');
+            const formatted = safe
+              .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+              .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+              .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+              .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+            if (formatted !== safe) {
+              const span = document.createElement('span');
+              span.innerHTML = formatted;
+              bubble.replaceChild(span, node);
+            }
+          }
+        });
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    let isEnhancing = false;
+    const msgObs = new MutationObserver(() => {
+      if (isEnhancing) return;
+      isEnhancing = true;
+      enhanceRenderedMessages();
+      isEnhancing = false;
+    });
+    msgObs.observe(messagesViewport, { childList: true });
+  }
+
+  // 6. Прокачанный полноэкранный просмотр фото (Lightbox с зумом 2x и кнопкой Скачать)
+  if (lightbox && lightboxImg) {
+    let isZoomed = false;
+    lightboxImg.style.transition = 'transform 0.22s ease';
+
+    const lbControls = document.createElement('div');
+    lbControls.style.cssText =
+      'position:fixed; bottom:calc(24px + env(safe-area-inset-bottom, 0px)); left:50%; transform:translateX(-50%); display:flex; gap:10px; z-index:220;';
+    lbControls.innerHTML = `
+      <button type="button" id="lbZoomBtn" class="vc-btn" style="background:rgba(17,23,38,0.85);">🔍 Увеличить</button>
+      <a id="lbDownloadLink" class="vc-btn send" href="#" download="pulse-photo.jpg" target="_blank" rel="noopener" style="text-decoration:none;">⬇ Скачать</a>
+    `;
+    lightbox.appendChild(lbControls);
+
+    const lbZoomBtn = lbControls.querySelector('#lbZoomBtn');
+    const lbDownloadLink = lbControls.querySelector('#lbDownloadLink');
+
+    if (lbZoomBtn) {
+      lbZoomBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerHaptic('light');
+        isZoomed = !isZoomed;
+        lightboxImg.style.transform = isZoomed ? 'scale(2)' : 'scale(1)';
+        lbZoomBtn.textContent = isZoomed ? '🔍 Уменьшить' : '🔍 Увеличить';
+      });
+    }
+
+    if (lbDownloadLink) {
+      lbDownloadLink.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerHaptic('light');
+        lbDownloadLink.href = lightboxImg.src || '#';
+      });
+    }
+
+    lightbox.addEventListener('click', () => {
+      isZoomed = false;
+      lightboxImg.style.transform = 'scale(1)';
+      if (lbZoomBtn) lbZoomBtn.textContent = '🔍 Увеличить';
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=14').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=15').catch(() => {});
     });
   }
 

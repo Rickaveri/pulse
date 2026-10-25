@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=14" />
+  <link rel="stylesheet" href="./styles.css?v=15" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=14"></script>
+  <script src="./config.js?v=15"></script>
 </head>
 <body>
 
@@ -287,8 +287,10 @@
       <video id="callLocalVideo" class="call-local-video" autoplay muted playsinline></video>
     </div>
 
+    <button id="callMinimizeBtn" class="call-minimize-btn" type="button" title="Свернуть звонок и перейти в чат">🔽 Свернуть в чат</button>
+
     <div class="call-header-info">
-      <div id="callPeerAvatar" class="avatar" style="width:86px; height:86px; font-size:32px; margin:0 auto 14px; box-shadow:0 12px 30px rgba(0,0,0,0.4);">А</div>
+      <div id="callPeerAvatar" class="avatar call-avatar-pulse" style="width:86px; height:86px; font-size:32px; margin:0 auto 14px; box-shadow:0 12px 30px rgba(0,0,0,0.4);">А</div>
       <h2 id="callPeerName" style="font-size:22px; font-weight:700;">Собеседник</h2>
       <p id="callStatusText" style="font-size:14.5px; color:rgba(255,255,255,0.75); margin-top:6px;">Вызов...</p>
     </div>
@@ -459,6 +461,14 @@
         </button>
       </div>
 
+      <!-- Быстрые вкладки-фильтры диалогов (v15) -->
+      <div id="chatFilterTabs" class="chat-filter-tabs">
+        <button type="button" class="chat-filter-tab active" data-chat-filter="all">Все</button>
+        <button type="button" class="chat-filter-tab" data-chat-filter="unread">Непрочитанные <span id="filterUnreadCount" class="filter-tab-badge hidden">0</span></button>
+        <button type="button" class="chat-filter-tab" data-chat-filter="dm">Личные</button>
+        <button type="button" class="chat-filter-tab" data-chat-filter="group">Группы</button>
+      </div>
+
       <div id="chatList" class="chat-list"></div>
     </aside>
 
@@ -584,6 +594,15 @@
     <img id="lightboxImg" src="" alt="Фото" />
   </div>
 
-  <script src="./app.js?v=14"></script>
+  <!-- Плавающая верхняя панель свёрнутого звонка (Mini Call Bar v15) -->
+  <div id="miniCallBar" class="mini-call-bar hidden">
+    <div id="miniCallRestoreArea" class="mini-call-info">
+      <span class="mini-call-dot"></span>
+      <span id="miniCallText">📞 Идёт звонок • Нажмите, чтобы развернуть</span>
+    </div>
+    <button id="miniCallHangupBtn" class="mini-call-hangup" type="button" title="Завершить звонок">📵 Сброс</button>
+  </div>
+
+  <script src="./app.js?v=15"></script>
 </body>
 </html>
