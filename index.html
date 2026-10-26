@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=20" />
+  <link rel="stylesheet" href="./styles.css?v=21" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=20"></script>
+  <script src="./config.js?v=21"></script>
 </head>
 <body>
 
@@ -214,9 +214,13 @@
   <div id="mediaPreviewModal" class="modal-backdrop hidden">
     <div class="auth-card" style="max-width:380px; text-align:center;">
       <h2 id="mediaPreviewTitle" style="font-size:18px; margin-bottom:10px;">Отправить фото</h2>
-      <div style="margin-bottom:12px; border-radius:14px; overflow:hidden; background:var(--bg-input); max-height:260px; display:flex; align-items:center; justify-content:center;">
+      <div style="margin-bottom:10px; border-radius:14px; overflow:hidden; background:var(--bg-input); max-height:260px; display:flex; align-items:center; justify-content:center;">
         <img id="mediaPreviewImg" src="" alt="Предпросмотр" style="max-width:100%; max-height:250px; object-fit:contain;" />
         <div id="mediaPreviewFileBox" class="hidden" style="padding:22px; font-size:14px; font-weight:600;"></div>
+      </div>
+      <div id="mediaPhotoTools" class="theme-pills" style="margin-bottom:10px;">
+        <button id="rotatePhotoBtn" type="button" class="theme-pill">🔄 Повернуть 90°</button>
+        <button id="enhancePhotoBtn" type="button" class="theme-pill">✨ Улучшить цвет</button>
       </div>
       <div class="field-group" style="text-align:left;">
         <label for="mediaCaptionInput">Подпись к вложению (необязательно)</label>
@@ -464,6 +468,7 @@
         </div>
 
         <div class="top-actions">
+          <button id="dndToggleBtn" class="icon-btn" title="Режим «Не беспокоить» (тихий режим без звука)" type="button" style="font-size:17px;">🌙</button>
           <button id="editProfileBtn" class="icon-btn" title="Настройки" type="button">
             <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -767,6 +772,9 @@
     </div>
   </div>
 
-  <script src="./app.js?v=20"></script>
+  <!-- Плавающая подсказка встроенного калькулятора в чате (v21) -->
+  <button id="calcHelperPill" class="calc-helper-pill hidden" type="button"></button>
+
+  <script src="./app.js?v=21"></script>
 </body>
 </html>

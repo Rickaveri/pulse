@@ -1369,6 +1369,42 @@ input, textarea {
   font-weight: 600;
 }
 
+/* Калькулятор выражений в поле ввода, режим «Не беспокоить» и интерактивные даты (v21) */
+.calc-helper-pill {
+  position: fixed;
+  bottom: calc(64px + var(--safe-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent-gradient);
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 8px 25px rgba(99, 102, 241, 0.45);
+  cursor: pointer;
+  z-index: 150;
+  animation: sheetPopIn 0.16s ease-out;
+}
+
+#dndToggleBtn.dnd-active {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.date-divider,
+.date-separator {
+  cursor: pointer;
+  transition: transform 0.14s ease, background 0.14s ease;
+}
+
+.date-divider:active,
+.date-separator:active {
+  transform: scale(0.95);
+}
+
 .section-bar {
   padding: 6px 14px 6px 16px;
   display: flex;
