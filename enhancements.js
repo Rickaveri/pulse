@@ -208,9 +208,246 @@
     });
   }
 
+  // 8. Исправления и улучшения v23 (Спойлер, чистый таймер 30с, Анти-шпион без меню, 3D-игры, Озвучка и Перевод)
+  const dndSettingsToggle = document.getElementById('dndSettingsToggle');
+  if (dndSettingsToggle) {
+    const syncDnd = () => {
+      const on = localStorage.getItem('pulse_dnd_mode') === 'on';
+      dndSettingsToggle.classList.toggle('on', on);
+      localStorage.setItem('pulse_sound', on ? 'off' : 'on');
+    };
+    dndSettingsToggle.addEventListener('click', () => {
+      haptic('medium');
+      const next = localStorage.getItem('pulse_dnd_mode') !== 'on';
+      localStorage.setItem('pulse_dnd_mode', next ? 'on' : 'off');
+      syncDnd();
+      showQuickToast(
+        next ? 'Режим «Не беспокоить» включён 🌙' : 'Звук уведомлений включён 🔔',
+        next ? 'Звуковые сигналы временно отключены' : 'Обычный режим оповещений активен'
+      );
+    });
+    syncDnd();
+  }
+
+  // В режиме «Анти-шпион» одиночное касание проявляет пузырь без открытия всплывающего меню
+  if (messagesViewport) {
+    messagesViewport.addEventListener(
+      'click',
+      (e) => {
+        if (!messagesViewport.classList.contains('privacy-blur-mode')) return;
+        const bubble = e.target.closest('.msg-bubble');
+        if (!bubble) return;
+        e.stopPropagation();
+        e.preventDefault();
+        haptic('light');
+        bubble.classList.toggle('peek-unblurred');
+      },
+      true
+    );
+  }
+
+  const msgActionModal = document.getElementById('msgActionModal');
+  const sheetSpeakBtn = document.getElementById('sheetSpeakBtn');
+  const sheetTranslateBtn = document.getElementById('sheetTranslateBtn');
+  const selfDestructToggleBtn = document.getElementById('selfDestructToggleBtn');
+  let lastTargetBubble = null;
+
+  function extractCleanBubbleText(bubble) {
+    if (!bubble) return '';
+    const clone = bubble.cloneNode(true);
+    clone
+      .querySelectorAll(
+        '.msg-meta, .reaction-chip-pill, .self-destruct-badge, .msg-reply-quote, .msg-translation-box, .yt-preview-card'
+      )
+      .forEach((el) => el.remove());
+    return clone.textContent.replace(/🔥\s*30s:\s*/gi, '').replace(/\|\|/g, '').trim();
+  }
+
+  if (messagesViewport) {
+    const trackBubble = (e) => {
+      const b = e.target.closest('.msg-bubble');
+      if (b) lastTargetBubble = b;
+    };
+    messagesViewport.addEventListener('pointerdown', trackBubble, true);
+    messagesViewport.addEventListener('touchstart', trackBubble, { capture: true, passive: true });
+    messagesViewport.addEventListener('click', trackBubble, true);
+  }
+
+  if (sheetSpeakBtn) {
+    sheetSpeakBtn.addEventListener(
+      'click',
+      (e) => {
+        e.stopImmediatePropagation();
+        haptic('light');
+        if (msgActionModal) msgActionModal.classList.add('hidden');
+        const txt = extractCleanBubbleText(lastTargetBubble);
+        if (!txt) return;
+        showQuickToast('🔊 Озвучиваю сообщение', txt);
+        if ('speechSynthesis' in window) {
+          try {
+            if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
+            setTimeout(() => {
+              const utt = new SpeechSynthesisUtterance(txt);
+              utt.lang = /[а-яА-ЯёЁ]/.test(txt) ? 'ru-RU' : 'en-US';
+              utt.rate = 1.0;
+              window.speechSynthesis.speak(utt);
+            }, 80);
+          } catch (err) {}
+        }
+      },
+      true
+    );
+  }
+
+  if (sheetTranslateBtn) {
+    sheetTranslateBtn.addEventListener(
+      'click',
+      async (e) => {
+        e.stopImmediatePropagation();
+        haptic('light');
+        if (msgActionModal) msgActionModal.classList.add('hidden');
+        const bubble = lastTargetBubble;
+        const txt = extractCleanBubbleText(bubble);
+        if (!txt) return;
+        const isRu = /[а-яА-ЯёЁ]/.test(txt);
+        const tl = isRu ? 'en' : 'ru';
+        try {
+          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${encodeURIComponent(txt.slice(0, 500))}`;
+          const res = await fetch(url);
+          const data = await res.json();
+          const translated = Array.isArray(data && data[0])
+            ? data[0].map((part) => part[0]).join('')
+            : '';
+          if (!translated) return;
+          if (bubble) {
+            const old = bubble.querySelector('.msg-translation-box');
+            if (old) old.remove();
+            const box = document.createElement('div');
+            box.className = 'msg-translation-box';
+            box.innerHTML = `<div class="msg-translation-label">🌐 Перевод (${tl.toUpperCase()})</div><div></div>`;
+            box.lastElementChild.textContent = translated;
+            const meta = bubble.querySelector('.msg-meta');
+            if (meta) bubble.insertBefore(box, meta);
+            else bubble.appendChild(box);
+          } else {
+            showQuickToast(`🌐 Перевод (${tl.toUpperCase()})`, translated);
+          }
+        } catch (err) {}
+      },
+      true
+    );
+  }
+
+  // 9. Глубокая обработка текста внутри пузырей (Спойлер ||...||, очистка 🔥 30s: и 3D-анимация Кубика/Монетки)
+  function processV23DeepBubbles() {
+    if (!messagesViewport) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-row')).forEach((row) => {
+      const bubble = row.querySelector('.msg-bubble');
+      if (!bubble) return;
+
+      const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, null);
+      const textNodes = [];
+      let n;
+      while ((n = walker.nextNode())) textNodes.push(n);
+
+      textNodes.forEach((tNode) => {
+        if (!tNode.nodeValue) return;
+
+        // А) Убираем служебный префикс 🔥 30s: перед словом
+        if (/🔥\s*30s:\s*/i.test(tNode.nodeValue)) {
+          tNode.nodeValue = tNode.nodeValue.replace(/🔥\s*30s:\s*/gi, '');
+          if (selfDestructToggleBtn) selfDestructToggleBtn.classList.remove('burn-active');
+        }
+
+        // Б) Прячем ||секрет|| за размытый спойлер на любой глубине вложенности
+        if (tNode.nodeValue.includes('||') && tNode.parentNode) {
+          const parts = tNode.nodeValue.split(/\|\|([^|]+)\|\|/g);
+          if (parts.length > 1) {
+            const frag = document.createDocumentFragment();
+            parts.forEach((part, idx) => {
+              if (idx % 2 === 1) {
+                const sp = document.createElement('span');
+                sp.className = 'msg-spoiler';
+                sp.title = 'Нажмите, чтобы показать скрытый текст';
+                sp.textContent = part;
+                const toggleSpoiler = (ev) => {
+                  ev.stopPropagation();
+                  haptic('light');
+                  sp.classList.toggle('revealed');
+                };
+                sp.addEventListener('click', toggleSpoiler, true);
+                sp.addEventListener('touchend', toggleSpoiler, { capture: true, passive: false });
+                frag.appendChild(sp);
+              } else if (part) {
+                frag.appendChild(document.createTextNode(part));
+              }
+            });
+            tNode.parentNode.replaceChild(frag, tNode);
+          }
+        }
+      });
+
+      // В) 3D-анимация для броска кубика 🎲 и монетки 🪙
+      if (!bubble.dataset.gameCardRendered) {
+        const fullTxt = bubble.textContent || '';
+        const diceMatch = fullTxt.match(/🎲 Бросок кубика:\s*([⚀⚁⚂⚃⚄⚅])\s*\(выпало (\d) из 6\)/);
+        if (diceMatch) {
+          bubble.dataset.gameCardRendered = '1';
+          const metaEl = bubble.querySelector('.msg-meta');
+          const card = document.createElement('div');
+          card.className = 'game-visual-card';
+          card.innerHTML = `
+            <div class="dice-cube-anim">${diceMatch[1]}</div>
+            <div>
+              <div style="font-weight:700; font-size:14.5px;">Бросок кубика 🎲</div>
+              <div style="font-size:12.5px; opacity:0.88;">Выпало: <strong>${diceMatch[2]} из 6</strong></div>
+            </div>
+          `;
+          bubble.innerHTML = '';
+          bubble.appendChild(card);
+          if (metaEl) bubble.appendChild(metaEl);
+          return;
+        }
+
+        const coinMatch = fullTxt.match(/🪙 Монетка:\s*выпал\(а\)\s*\**\s*(Орёл 🦅|Решка 👑)/);
+        if (coinMatch) {
+          bubble.dataset.gameCardRendered = '1';
+          const isEagle = coinMatch[1].includes('Орёл');
+          const metaEl = bubble.querySelector('.msg-meta');
+          const card = document.createElement('div');
+          card.className = 'game-visual-card';
+          card.innerHTML = `
+            <div class="coin-disc-anim">${isEagle ? '🦅' : '👑'}</div>
+            <div>
+              <div style="font-weight:700; font-size:14.5px;">Бросок монетки 🪙</div>
+              <div style="font-size:12.5px; opacity:0.88;">Результат: <strong>${coinMatch[1]}</strong></div>
+            </div>
+          `;
+          bubble.innerHTML = '';
+          bubble.appendChild(card);
+          if (metaEl) bubble.appendChild(metaEl);
+        }
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    let v23Raf = false;
+    const v23Obs = new MutationObserver(() => {
+      if (v23Raf) return;
+      v23Raf = true;
+      requestAnimationFrame(() => {
+        v23Raf = false;
+        processV23DeepBubbles();
+      });
+    });
+    v23Obs.observe(messagesViewport, { childList: true, subtree: true });
+    processV23DeepBubbles();
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=22').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=23').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

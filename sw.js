@@ -1,11 +1,11 @@
-const CACHE_NAME = 'pulse-pwa-v22';
+const CACHE_NAME = 'pulse-pwa-v23';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=22',
-  './config.js?v=22',
-  './app.js?v=22',
-  './enhancements.js?v=22',
+  './styles.css?v=23',
+  './config.js?v=23',
+  './app.js?v=23',
+  './enhancements.js?v=23',
   './manifest.json'
 ];
 

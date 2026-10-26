@@ -1422,6 +1422,87 @@ input, textarea {
   border: 1px solid var(--accent);
 }
 
+.messages-viewport.privacy-blur-mode .msg-bubble.peek-unblurred {
+  filter: blur(0) !important;
+}
+
+/* Горизонтальная прокрутка панели инструментов (Спойлер, Таймер, Гео, Игры) на iPhone (v23) */
+.emoji-drawer {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 8px !important;
+  padding: 8px 10px !important;
+}
+
+.emoji-drawer-list,
+.drawer-tools-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  scrollbar-width: none;
+  width: 100%;
+  padding-bottom: 2px;
+}
+
+.drawer-tools-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* 3D-анимации для игр «🎲 Кубик» и «🪙 Монетка» в чате (v23) */
+.game-visual-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 4px;
+  min-width: 195px;
+}
+
+.dice-cube-anim {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #ffffff 0%, #e2e8f0 100%);
+  color: #1e1b4b;
+  font-size: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  flex-shrink: 0;
+  animation: diceRoll3D 0.68s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes diceRoll3D {
+  0% { transform: scale(0.4) rotate(-180deg); opacity: 0.3; }
+  60% { transform: scale(1.18) rotate(18deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+.coin-disc-anim {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #fbbf24 0%, #d97706 100%);
+  border: 2px solid #fde68a;
+  color: #ffffff;
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(245, 158, 11, 0.4);
+  flex-shrink: 0;
+  animation: coinFlip3D 0.78s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes coinFlip3D {
+  0% { transform: perspective(300px) rotateY(0deg) scale(0.5); }
+  55% { transform: perspective(300px) rotateY(720deg) scale(1.2); }
+  100% { transform: perspective(300px) rotateY(1080deg) scale(1); }
+}
+
 .section-bar {
   padding: 6px 14px 6px 16px;
   display: flex;

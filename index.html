@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=22" />
+  <link rel="stylesheet" href="./styles.css?v=23" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=22"></script>
+  <script src="./config.js?v=23"></script>
 </head>
 <body>
 
@@ -181,6 +181,16 @@
         <div class="settings-row">
           <span>Звук новых сообщений</span>
           <button id="soundToggleSwitch" class="toggle-switch on" type="button">
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+
+        <div class="settings-row" style="margin-top:8px;">
+          <div>
+            <div>🌙 Режим «Не беспокоить»</div>
+            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Отключает звуки и всплывающие баннеры</div>
+          </div>
+          <button id="dndSettingsToggle" class="toggle-switch" type="button">
             <span class="toggle-knob"></span>
           </button>
         </div>
@@ -469,7 +479,6 @@
         </div>
 
         <div class="top-actions">
-          <button id="dndToggleBtn" class="icon-btn" title="Режим «Не беспокоить» (тихий режим без звука)" type="button" style="font-size:17px;">🌙</button>
           <button id="editProfileBtn" class="icon-btn" title="Настройки" type="button">
             <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -619,15 +628,17 @@
             <button type="button" class="emoji-quick-item" data-insert-emoji="🙏">🙏</button>
             <button type="button" class="emoji-quick-item" data-insert-emoji="💯">💯</button>
           </div>
-          <button id="diceRollBtn" class="dictate-pill-btn" type="button" title="Бросить игровой кубик 1–6 в чат">🎲 Кубик</button>
-          <button id="coinFlipBtn" class="dictate-pill-btn" type="button" title="Подбросить монетку (Орёл или Решка)">🪙 Монетка</button>
-          <button id="selfDestructToggleBtn" class="dictate-pill-btn" type="button" title="Исчезающее сообщение (удалится через 30 секунд)">🔥 30с</button>
-          <button id="insertSpoilerBtn" class="dictate-pill-btn" type="button" title="Скрытый текст-спойлер">👁️ Спойлер</button>
-          <button id="createChecklistBtn" class="dictate-pill-btn" type="button" title="Создать интерактивный список задач">☑️ Список</button>
-          <button id="scheduleMsgBtn" class="dictate-pill-btn" type="button" title="Отложенная отправка сообщения по таймеру">⏰ Таймер</button>
-          <button id="sendLocationBtn" class="dictate-pill-btn" type="button" title="Отправить текущую геолокацию">📍 Гео</button>
-          <button id="createPollBtn" class="dictate-pill-btn" type="button" title="Создать опрос в чате">📊 Опрос</button>
-          <button id="voiceDictateBtn" class="dictate-pill-btn" type="button" title="Голосовой ввод текста">🎙️ Диктовка</button>
+          <div class="drawer-tools-scroll">
+            <button id="selfDestructToggleBtn" class="dictate-pill-btn" type="button" title="Исчезающее сообщение (удалится через 30 секунд)">🔥 30с</button>
+            <button id="insertSpoilerBtn" class="dictate-pill-btn" type="button" title="Скрытый текст-спойлер">👁️ Спойлер</button>
+            <button id="createChecklistBtn" class="dictate-pill-btn" type="button" title="Создать интерактивный список задач">☑️ Список</button>
+            <button id="scheduleMsgBtn" class="dictate-pill-btn" type="button" title="Отложенная отправка сообщения по таймеру">⏰ Таймер</button>
+            <button id="sendLocationBtn" class="dictate-pill-btn" type="button" title="Отправить текущую геолокацию">📍 Гео</button>
+            <button id="createPollBtn" class="dictate-pill-btn" type="button" title="Создать опрос в чате">📊 Опрос</button>
+            <button id="diceRollBtn" class="dictate-pill-btn" type="button" title="Бросить игровой кубик 1–6 в чат">🎲 Кубик</button>
+            <button id="coinFlipBtn" class="dictate-pill-btn" type="button" title="Подбросить монетку (Орёл или Решка)">🪙 Монетка</button>
+            <button id="voiceDictateBtn" class="dictate-pill-btn" type="button" title="Голосовой ввод текста">🎙️ Диктовка</button>
+          </div>
         </div>
 
         <!-- Нижняя панель ввода -->
@@ -792,7 +803,7 @@
     </div>
   </div>
 
-  <script src="./app.js?v=22"></script>
-  <script src="./enhancements.js?v=22"></script>
+  <script src="./app.js?v=23"></script>
+  <script src="./enhancements.js?v=23"></script>
 </body>
 </html>
