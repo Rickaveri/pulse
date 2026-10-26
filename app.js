@@ -5457,9 +5457,250 @@
     });
   }
 
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v20 (Часть 1: PIN-блокировка, Сохранение в Избранное в 1 клик, Автообновление)
+  const setupPinLockBtn = document.getElementById('setupPinLockBtn');
+  const pinStatusSubtext = document.getElementById('pinStatusSubtext');
+  const pinLockOverlay = document.getElementById('pinLockOverlay');
+  const pinLockTitle = document.getElementById('pinLockTitle');
+  const pinLockSub = document.getElementById('pinLockSub');
+  const pinDots = Array.from(document.querySelectorAll('#pinDotsRow .pin-dot'));
+  const pinKeys = Array.from(document.querySelectorAll('[data-pin-key]'));
+  const pinCancelSetupBtn = document.getElementById('pinCancelSetupBtn');
+  const sheetSaveToFavBtn = document.getElementById('sheetSaveToFavBtn');
+  const selfDestructToggleBtn = document.getElementById('selfDestructToggleBtn');
+
+  let enteredPin = '';
+  let pinMode = 'unlock'; // 'unlock' | 'setup'
+
+  function getSavedPin() {
+    return localStorage.getItem('pulse_app_pin') || '';
+  }
+
+  function updatePinSettingsUI() {
+    const hasPin = !!getSavedPin();
+    if (setupPinLockBtn) {
+      setupPinLockBtn.textContent = hasPin ? 'Отключить PIN' : 'Установить';
+    }
+    if (pinStatusSubtext) {
+      pinStatusSubtext.textContent = hasPin
+        ? '🔐 Защита активна • Запрашивается при входе'
+        : 'Защита мессенджера 4-значным кодом';
+    }
+  }
+
+  function renderPinDots() {
+    pinDots.forEach((d, idx) => d.classList.toggle('filled', idx < enteredPin.length));
+  }
+
+  function openPinOverlay(mode) {
+    if (!pinLockOverlay) return;
+    pinMode = mode;
+    enteredPin = '';
+    renderPinDots();
+    if (pinLockTitle) {
+      pinLockTitle.textContent = mode === 'setup' ? 'Придумайте 4 цифры PIN' : 'Введите код-пароль';
+    }
+    if (pinLockSub) {
+      pinLockSub.textContent =
+        mode === 'setup' ? 'Этот код защитит вход в приложение' : 'Для доступа к вашим чатам Pulse';
+    }
+    if (pinCancelSetupBtn) {
+      pinCancelSetupBtn.style.visibility = mode === 'setup' ? 'visible' : 'hidden';
+    }
+    pinLockOverlay.classList.remove('hidden');
+  }
+
+  if (setupPinLockBtn) {
+    setupPinLockBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      if (getSavedPin()) {
+        localStorage.removeItem('pulse_app_pin');
+        updatePinSettingsUI();
+        showInAppToast({ title: 'PIN-защита отключена 🔓', text: 'Вход без кода-пароля', peer: null, roomId: null });
+      } else {
+        openPinOverlay('setup');
+      }
+    });
+  }
+
+  if (pinCancelSetupBtn) {
+    pinCancelSetupBtn.addEventListener('click', () => {
+      if (pinMode === 'setup' && pinLockOverlay) pinLockOverlay.classList.add('hidden');
+    });
+  }
+
+  pinKeys.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const k = btn.getAttribute('data-pin-key');
+      if (k === 'back') {
+        enteredPin = enteredPin.slice(0, -1);
+        renderPinDots();
+        return;
+      }
+      if (enteredPin.length < 4) {
+        enteredPin += k;
+        renderPinDots();
+      }
+      if (enteredPin.length === 4) {
+        setTimeout(() => {
+          if (pinMode === 'setup') {
+            localStorage.setItem('pulse_app_pin', enteredPin);
+            updatePinSettingsUI();
+            if (pinLockOverlay) pinLockOverlay.classList.add('hidden');
+            showInAppToast({ title: 'Код-пароль установлен 🔐', text: 'Приложение защищено PIN-кодом', peer: null, roomId: null });
+          } else {
+            if (enteredPin === getSavedPin()) {
+              triggerHaptic('medium');
+              if (pinLockOverlay) pinLockOverlay.classList.add('hidden');
+            } else {
+              triggerHaptic('heavy');
+              enteredPin = '';
+              renderPinDots();
+              if (pinLockSub) pinLockSub.textContent = '❌ Неверный код, попробуйте ещё раз';
+            }
+          }
+        }, 120);
+      }
+    });
+  });
+
+  updatePinSettingsUI();
+  if (getSavedPin()) {
+    openPinOverlay('unlock');
+  }
+
+  // Быстрое сохранение любого сообщения в «Избранное» в 1 касание (⭐)
+  if (sheetSaveToFavBtn) {
+    sheetSaveToFavBtn.addEventListener('click', async () => {
+      triggerHaptic('medium');
+      if (msgActionModal) msgActionModal.classList.add('hidden');
+      if (!selectedMsgContext || !selectedMsgContext.msg || !currentUser) return;
+      const favRoom = myRooms.find(
+        (r) => r.name === 'Избранное' || r.saved_for === currentUser.id
+      );
+      if (!favRoom) return;
+      const orig = selectedMsgContext.msg;
+      const cleanTxt = selectedMsgContext.cleanText || '';
+      const enc = cleanTxt ? await encryptTextForRoom(`⭐ ${cleanTxt}`, favRoom) : '';
+      await insertMessageRow({
+        room_id: favRoom.id,
+        content: enc,
+        media_type: orig.media_type || 'text',
+        media_url: orig.media_url || null,
+        media_duration: orig.media_duration || 0
+      });
+      showInAppToast({
+        title: 'Сохранено в Избранное ⭐',
+        text: cleanTxt || 'Вложение добавлено в Избранное',
+        peer: null,
+        roomId: favRoom.id
+      });
+    });
+  }
+
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v20 (Часть 2: Секретные исчезающие сообщения 🔥 30с, YouTube-превью и автообновление)
+  if (selfDestructToggleBtn && messageInput) {
+    selfDestructToggleBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const v = messageInput.value;
+      if (v.startsWith('🔥30s:')) {
+        messageInput.value = v.replace(/^🔥30s:\s*/, '');
+        selfDestructToggleBtn.classList.remove('burn-active');
+      } else {
+        messageInput.value = `🔥30s: ${v}`;
+        selfDestructToggleBtn.classList.add('burn-active');
+      }
+      messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+      messageInput.focus();
+    });
+  }
+
+  function processV20Messages() {
+    if (!messagesViewport) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-row')).forEach((row) => {
+      const bubble = row.querySelector('.msg-bubble');
+      if (!bubble || bubble.dataset.v20Processed) return;
+      bubble.dataset.v20Processed = '1';
+      const raw = bubble.textContent || '';
+
+      // 1) Самоуничтожающееся сообщение 🔥30s:
+      if (raw.includes('🔥30s:')) {
+        const msgId = row.getAttribute('data-msg-id');
+        Array.from(bubble.childNodes).forEach((n) => {
+          if (n.nodeType === Node.TEXT_NODE && n.nodeValue && n.nodeValue.includes('🔥30s:')) {
+            n.nodeValue = n.nodeValue.replace('🔥30s:', '').trimStart();
+          }
+        });
+        const badge = document.createElement('div');
+        badge.className = 'self-destruct-badge';
+        let secLeft = 30;
+        badge.textContent = `🔥 Исчезнет через ${secLeft}с`;
+        bubble.insertBefore(badge, bubble.firstChild);
+
+        const timer = setInterval(async () => {
+          secLeft -= 1;
+          if (secLeft > 0) {
+            badge.textContent = `🔥 Исчезнет через ${secLeft}с`;
+          } else {
+            clearInterval(timer);
+            row.style.opacity = '0';
+            setTimeout(() => row.remove(), 250);
+            if (msgId) {
+              hideMsgLocally(msgId);
+              if (supabaseClient) {
+                try { await supabaseClient.from('messages').delete().eq('id', msgId); } catch (e) {}
+              }
+            }
+          }
+        }, 1000);
+      }
+
+      // 2) Автоматическое превью YouTube-роликов прямо в сообщении
+      const ytMatch = raw.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+      if (ytMatch && !bubble.querySelector('.yt-preview-card')) {
+        const vidId = ytMatch[1];
+        const card = document.createElement('a');
+        card.className = 'yt-preview-card';
+        card.href = `https://www.youtube.com/watch?v=${vidId}`;
+        card.target = '_blank';
+        card.rel = 'noopener noreferrer';
+        card.innerHTML = `
+          <img src="https://img.youtube.com/vi/${vidId}/hqdefault.jpg" alt="YouTube Video" loading="lazy" />
+          <div class="yt-preview-title">▶️ Смотреть видео на YouTube ↗</div>
+        `;
+        card.addEventListener('click', (e) => e.stopPropagation());
+        const metaEl = bubble.querySelector('.msg-meta');
+        if (metaEl) bubble.insertBefore(card, metaEl);
+        else bubble.appendChild(card);
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    let v20Raf = false;
+    const v20Obs = new MutationObserver(() => {
+      if (v20Raf) return;
+      v20Raf = true;
+      requestAnimationFrame(() => {
+        v20Raf = false;
+        processV20Messages();
+      });
+    });
+    v20Obs.observe(messagesViewport, { childList: true });
+    processV20Messages();
+  }
+
+  // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=19').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=20').then((reg) => {
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') {
+            reg.update().catch(() => {});
+          }
+        });
+      }).catch(() => {});
     });
   }
 

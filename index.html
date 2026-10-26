@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=19" />
+  <link rel="stylesheet" href="./styles.css?v=20" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=19"></script>
+  <script src="./config.js?v=20"></script>
 </head>
 <body>
 
@@ -194,15 +194,15 @@
         </div>
       </div>
 
-      <!-- Секция Пригласить друга и Выход -->
+      <!-- Секция Безопасность, Друзья и Выход -->
       <div class="settings-section">
-        <div class="settings-section-title">Диагностика, друзья и аккаунт</div>
+        <div class="settings-section-title">Безопасность, друзья и аккаунт</div>
         <div class="settings-row" style="margin-bottom:10px;">
           <div>
-            <div>Соединение и кэш v19</div>
-            <div id="pingStatusText" style="font-size:11.5px; color:var(--success); margin-top:2px;">⚡ Стабильно • AES-256 активен</div>
+            <div>Код-пароль на вход (PIN)</div>
+            <div id="pinStatusSubtext" style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Защита мессенджера 4-значным кодом</div>
           </div>
-          <button id="forceRefreshCacheBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Обновить кэш</button>
+          <button id="setupPinLockBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Установить</button>
         </div>
         <button id="shareInviteBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--accent); margin-bottom:6px;">🔗 Поделиться ссылкой на мессенджер</button>
         <button id="requestLogoutBtn" class="btn-danger" type="button">Выйти из аккаунта</button>
@@ -253,6 +253,10 @@
       <button id="sheetReplyBtn" class="sheet-item" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
         <span>Ответить</span>
+      </button>
+      <button id="sheetSaveToFavBtn" class="sheet-item" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <span>Сохранить в Избранное ⭐</span>
       </button>
       <button id="sheetPinBtn" class="sheet-item" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
@@ -608,6 +612,7 @@
             <button type="button" class="emoji-quick-item" data-insert-emoji="🙏">🙏</button>
             <button type="button" class="emoji-quick-item" data-insert-emoji="💯">💯</button>
           </div>
+          <button id="selfDestructToggleBtn" class="dictate-pill-btn" type="button" title="Исчезающее сообщение (удалится через 30 секунд)">🔥 30с</button>
           <button id="insertSpoilerBtn" class="dictate-pill-btn" type="button" title="Скрытый текст-спойлер">👁️ Спойлер</button>
           <button id="createChecklistBtn" class="dictate-pill-btn" type="button" title="Создать интерактивный список задач">☑️ Список</button>
           <button id="scheduleMsgBtn" class="dictate-pill-btn" type="button" title="Отложенная отправка сообщения по таймеру">⏰ Таймер</button>
@@ -733,6 +738,35 @@
     </div>
   </div>
 
-  <script src="./app.js?v=19"></script>
+  <!-- Экран блокировки по 4-значному PIN-коду (как в Telegram v20) -->
+  <div id="pinLockOverlay" class="overlay-screen hidden" style="z-index:350;">
+    <div class="auth-card" style="max-width:340px; text-align:center;">
+      <div class="auth-logo" style="margin:0 auto 12px;">🔒</div>
+      <h2 id="pinLockTitle" style="font-size:19px; margin-bottom:6px;">Введите код-пароль</h2>
+      <p id="pinLockSub" style="font-size:13px; color:var(--text-muted); margin-bottom:16px;">Для доступа к вашим чатам Pulse</p>
+      <div id="pinDotsRow" class="pin-dots-row">
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+        <span class="pin-dot"></span>
+      </div>
+      <div class="pin-keypad">
+        <button type="button" class="pin-key" data-pin-key="1">1</button>
+        <button type="button" class="pin-key" data-pin-key="2">2</button>
+        <button type="button" class="pin-key" data-pin-key="3">3</button>
+        <button type="button" class="pin-key" data-pin-key="4">4</button>
+        <button type="button" class="pin-key" data-pin-key="5">5</button>
+        <button type="button" class="pin-key" data-pin-key="6">6</button>
+        <button type="button" class="pin-key" data-pin-key="7">7</button>
+        <button type="button" class="pin-key" data-pin-key="8">8</button>
+        <button type="button" class="pin-key" data-pin-key="9">9</button>
+        <button type="button" class="pin-key ghost" id="pinCancelSetupBtn">Отмена</button>
+        <button type="button" class="pin-key" data-pin-key="0">0</button>
+        <button type="button" class="pin-key ghost" data-pin-key="back">⌫</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js?v=20"></script>
 </body>
 </html>

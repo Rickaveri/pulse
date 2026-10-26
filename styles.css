@@ -1267,6 +1267,108 @@ input, textarea {
   color: var(--text-main);
 }
 
+/* PIN-блокировка, самоуничтожающиеся сообщения и YouTube-превью (v20) */
+.pin-dots-row {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.pin-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: transparent;
+  transition: background 0.14s ease, transform 0.14s ease;
+}
+
+.pin-dot.filled {
+  background: var(--accent);
+  transform: scale(1.15);
+}
+
+.pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  max-width: 250px;
+  margin: 0 auto;
+}
+
+.pin-key {
+  height: 58px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font-size: 21px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+
+.pin-key:active {
+  transform: scale(0.92);
+  background: var(--accent-soft);
+}
+
+.pin-key.ghost {
+  background: transparent;
+  border-color: transparent;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+.dictate-pill-btn.burn-active {
+  background: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+.self-destruct-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(239, 68, 68, 0.24);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 5px;
+}
+
+.yt-preview-card {
+  display: block;
+  margin-top: 7px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: inherit;
+  text-decoration: none;
+  max-width: 260px;
+}
+
+.yt-preview-card img {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  display: block;
+}
+
+.yt-preview-title {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .section-bar {
   padding: 6px 14px 6px 16px;
   display: flex;
