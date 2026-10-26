@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=21" />
+  <link rel="stylesheet" href="./styles.css?v=22" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=21"></script>
+  <script src="./config.js?v=22"></script>
 </head>
 <body>
 
@@ -204,6 +204,7 @@
           </div>
           <button id="setupPinLockBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Установить</button>
         </div>
+        <button id="showQrCardBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--border); margin-bottom:6px;">📱 Показать мой QR-код и визитку</button>
         <button id="shareInviteBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--accent); margin-bottom:6px;">🔗 Поделиться ссылкой на мессенджер</button>
         <button id="requestLogoutBtn" class="btn-danger" type="button">Выйти из аккаунта</button>
       </div>
@@ -560,6 +561,7 @@
                 <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
               </svg>
             </button>
+            <button id="privacyBlurToggleBtn" class="icon-btn" type="button" title="Режим «Анти-шпион» (размыть сообщения в чате от посторонних глаз)" style="width:34px; height:34px; font-size:16px;">🕶️</button>
             <button id="chatSearchToggleBtn" class="icon-btn" type="button" title="Поиск по сообщениям в чате" style="width:34px; height:34px;">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -617,6 +619,8 @@
             <button type="button" class="emoji-quick-item" data-insert-emoji="🙏">🙏</button>
             <button type="button" class="emoji-quick-item" data-insert-emoji="💯">💯</button>
           </div>
+          <button id="diceRollBtn" class="dictate-pill-btn" type="button" title="Бросить игровой кубик 1–6 в чат">🎲 Кубик</button>
+          <button id="coinFlipBtn" class="dictate-pill-btn" type="button" title="Подбросить монетку (Орёл или Решка)">🪙 Монетка</button>
           <button id="selfDestructToggleBtn" class="dictate-pill-btn" type="button" title="Исчезающее сообщение (удалится через 30 секунд)">🔥 30с</button>
           <button id="insertSpoilerBtn" class="dictate-pill-btn" type="button" title="Скрытый текст-спойлер">👁️ Спойлер</button>
           <button id="createChecklistBtn" class="dictate-pill-btn" type="button" title="Создать интерактивный список задач">☑️ Список</button>
@@ -775,6 +779,20 @@
   <!-- Плавающая подсказка встроенного калькулятора в чате (v21) -->
   <button id="calcHelperPill" class="calc-helper-pill hidden" type="button"></button>
 
-  <script src="./app.js?v=21"></script>
+  <!-- Модальное окно QR-визитки профиля для быстрого приглашения друзей (v22) -->
+  <div id="qrInviteModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:340px; text-align:center;">
+      <h2 style="font-size:18px; margin-bottom:6px;">📱 Ваша QR-визитка Pulse</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:14px;">Покажите этот QR-код другу, чтобы он сразу открыл Pulse и нашёл вас по тегу:</p>
+      <div style="background:#ffffff; padding:14px; border-radius:18px; display:inline-block; margin-bottom:12px;">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://rickaveri.github.io/pulse/" alt="QR-код Pulse" style="width:180px; height:180px; display:block;" />
+      </div>
+      <div id="qrHandleLabel" style="font-size:18px; font-weight:700; color:var(--accent); margin-bottom:14px;">@username</div>
+      <button id="closeQrModalBtn" class="btn-primary" type="button">Готово</button>
+    </div>
+  </div>
+
+  <script src="./app.js?v=22"></script>
+  <script src="./enhancements.js?v=22"></script>
 </body>
 </html>

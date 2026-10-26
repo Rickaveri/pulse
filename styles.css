@@ -1405,6 +1405,23 @@ input, textarea {
   transform: scale(0.95);
 }
 
+/* Режим «Анти-шпион» — размытие сообщений чата от посторонних глаз (v22) */
+.messages-viewport.privacy-blur-mode .msg-bubble {
+  filter: blur(7px);
+  transition: filter 0.18s ease;
+}
+
+.messages-viewport.privacy-blur-mode .msg-bubble:hover,
+.messages-viewport.privacy-blur-mode .msg-bubble:active {
+  filter: blur(0);
+}
+
+#privacyBlurToggleBtn.dnd-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
 .section-bar {
   padding: 6px 14px 6px 16px;
   display: flex;
