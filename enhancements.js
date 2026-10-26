@@ -445,9 +445,49 @@
     processV23DeepBubbles();
   }
 
+
+  // 10. Фоновый Keep-Alive для iPhone PWA (чтобы iOS не усыпляла сокет и пуши при переключении в Safari)
+  let bgKeepAliveStarted = false;
+  function startIosBackgroundKeepAlive() {
+    if (bgKeepAliveStarted) return;
+    bgKeepAliveStarted = true;
+    try {
+      // Генерируем 1 секунду абсолютно тихого (нулевого) WAV-аудио в памяти
+      const sampleRate = 8000;
+      const numSamples = sampleRate;
+      const buffer = new ArrayBuffer(44 + numSamples * 2);
+      const view = new DataView(buffer);
+      const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+      writeStr(0, "RIFF");
+      view.setUint32(4, 36 + numSamples * 2, true);
+      writeStr(8, "WAVEfmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, "data");
+      view.setUint32(40, numSamples * 2, true);
+      const blob = new Blob([buffer], { type: "audio/wav" });
+      const silentAudio = document.createElement("audio");
+      silentAudio.src = URL.createObjectURL(blob);
+      silentAudio.loop = true;
+      silentAudio.volume = 0.01;
+      silentAudio.setAttribute("playsinline", "");
+      silentAudio.style.display = "none";
+      document.body.appendChild(silentAudio);
+      silentAudio.play().catch(() => {});
+    } catch (e) {}
+  }
+
+  window.addEventListener("touchstart", startIosBackgroundKeepAlive, { once: true, passive: true });
+  window.addEventListener("click", startIosBackgroundKeepAlive, { once: true });
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=23').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=24').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

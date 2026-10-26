@@ -1,11 +1,11 @@
-const CACHE_NAME = 'pulse-pwa-v23';
+const CACHE_NAME = 'pulse-pwa-v24';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=23',
-  './config.js?v=23',
-  './app.js?v=23',
-  './enhancements.js?v=23',
+  './styles.css?v=24',
+  './config.js?v=24',
+  './app.js?v=24',
+  './enhancements.js?v=24',
   './manifest.json'
 ];
 
@@ -38,7 +38,38 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Обработка нажатия на системное Push-уведомление
+// Мгновенный показ системного Push-уведомления от фонового потока или Web Push
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (data && data.type === 'SHOW_NOTIFICATION') {
+    event.waitUntil(
+      self.registration.showNotification(data.title || 'Новое сообщение в Pulse', {
+        body: data.body || 'Откройте приложение, чтобы прочитать',
+        tag: data.roomId ? `pulse-room-${data.roomId}-${Date.now()}` : `pulse-${Date.now()}`,
+        renotify: true,
+        vibrate: [200, 100, 200],
+        data: { roomId: data.roomId || null }
+      })
+    );
+  }
+});
+
+self.addEventListener('push', (event) => {
+  let payload = { title: 'Pulse', body: 'Новое сообщение', roomId: null };
+  try {
+    if (event.data) payload = Object.assign(payload, event.data.json());
+  } catch (e) {}
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      tag: `pulse-push-${Date.now()}`,
+      renotify: true,
+      vibrate: [200, 100, 200],
+      data: { roomId: payload.roomId || null }
+    })
+  );
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetRoomId = event.notification.data && event.notification.data.roomId;

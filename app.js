@@ -335,7 +335,17 @@
     if (id) payload.id = id;
     if (created_at) payload.created_at = created_at;
 
-    return await supabaseClient.from('messages').insert(payload).select();
+    const res = await supabaseClient.from('messages').insert(payload).select();
+    if (res && res.data && res.data[0] && realtimeChannel) {
+      try {
+        realtimeChannel.send({
+          type: 'broadcast',
+          event: 'new-message',
+          payload: res.data[0]
+        });
+      } catch (e) {}
+    }
+    return res;
   }
 
   function detectMessageKind(msg) {
@@ -546,19 +556,28 @@
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     try {
       if ('serviceWorker' in navigator) {
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: 'SHOW_NOTIFICATION',
+            title,
+            body,
+            roomId: roomId || null
+          });
+          return;
+        }
         const reg = await navigator.serviceWorker.ready;
         if (reg && reg.showNotification) {
           await reg.showNotification(title, {
             body,
-            tag: roomId ? `pulse-room-${roomId}` : 'pulse-general',
+            tag: `pulse-msg-${Date.now()}`,
             renotify: true,
-            vibrate: [180, 80, 180],
+            vibrate: [200, 100, 200],
             data: { roomId: roomId || null }
           });
           return;
         }
       }
-      const n = new Notification(title, { body, tag: roomId || 'pulse' });
+      const n = new Notification(title, { body, tag: `pulse-${Date.now()}` });
       n.onclick = () => {
         window.focus();
         if (roomId) {
@@ -750,12 +769,13 @@
   async function preloadAllRoomsMessages() {
     if (!currentUser || !supabaseClient || myRooms.length === 0) return;
     const roomIds = myRooms.map((r) => r.id);
-    const { data, error } = await supabaseClient
+    const { data: descData, error } = await supabaseClient
       .from('messages')
       .select('*')
       .in('room_id', roomIds)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
       .limit(900);
+    const data = descData ? [...descData].reverse() : null;
 
     if (error || !data) return;
 
@@ -772,10 +792,17 @@
         roomMessagesCache.set(room.id, list);
 
         if (!activeRoom || activeRoom.id !== room.id) {
-          const lastReadTs = getLastReadTimestamp(room.id);
+          let lastReadTs = getLastReadTimestamp(room.id);
+          const isSavedRoom = (room.direct_key || "").startsWith("saved_");
           if (lastReadTs === 0) {
-            setLastReadTimestamp(room.id, Date.now());
-          } else {
+            if (isSavedRoom) {
+              setLastReadTimestamp(room.id, Date.now());
+              lastReadTs = Date.now();
+            } else {
+              lastReadTs = Date.now() - 86400000;
+            }
+          }
+          if (lastReadTs > 0) {
             const unreadCount = list.filter((m) => {
               const k = detectMessageKind(m);
               return (
@@ -801,8 +828,11 @@
     renderSidebarList();
   }
 
+  const notifiedMsgIds = new Set();
   async function handleIncomingMessageNotification(incoming) {
-    if (!currentUser || incoming.sender_id === currentUser.id) return;
+    if (!currentUser || !incoming || incoming.sender_id === currentUser.id) return;
+    if (incoming.id && notifiedMsgIds.has(incoming.id)) return;
+    if (incoming.id) notifiedMsgIds.add(incoming.id);
 
     let room = myRooms.find((r) => r.id === incoming.room_id);
     if (!room) {
@@ -827,26 +857,26 @@
       incoming.sender_name ||
       getRoomPresentation(room).title;
 
+    const k = detectMessageKind(incoming);
     if (!isChatCurrentlyVisible) {
-      const k = detectMessageKind(incoming);
       if (k !== 'reaction_packet' && k !== 'pin_packet') {
         const prevCount = unreadCounts.get(room.id) || 0;
         unreadCounts.set(room.id, prevCount + 1);
         updateAppIconBadge();
         renderSidebarList();
       }
-
-      showInAppToast({
-        title: senderName,
-        text: previewText,
-        peer: senderProfile,
-        roomId: room.id
-      });
-
-      sendSystemNotification(senderName, previewText, room.id);
     } else {
       setLastReadTimestamp(room.id, Date.now());
     }
+
+    showInAppToast({
+      title: senderName,
+      text: previewText,
+      peer: senderProfile,
+      roomId: room.id
+    });
+
+    sendSystemNotification(senderName, previewText, room.id);
   }
 
   if ('serviceWorker' in navigator) {
@@ -1386,6 +1416,43 @@
     await refreshDirectoryAndRooms();
     await preloadAllRoomsMessages();
     subscribeRealtime();
+
+    // Seed existing message IDs so we only notify on brand-new messages
+    roomMessagesCache.forEach((msgs) => {
+      (msgs || []).forEach((m) => { if (m && m.id) notifiedMsgIds.add(m.id); });
+    });
+
+    setInterval(async () => {
+      if (!currentUser || !supabaseClient) return;
+      try {
+        const prevRoomCount = myRooms.length;
+        await refreshDirectoryAndRooms();
+        if (myRooms.length === 0) return;
+        const rIds = myRooms.map((r) => r.id);
+        const { data: recent } = await supabaseClient
+          .from('messages')
+          .select('*')
+          .in('room_id', rIds)
+          .order('created_at', { ascending: false })
+          .limit(25);
+        if (!recent || !recent.length) return;
+        let hasNew = myRooms.length !== prevRoomCount;
+        for (const m of [...recent].reverse()) {
+          if (m.id && !notifiedMsgIds.has(m.id)) {
+            hasNew = true;
+            if (m.sender_id !== currentUser.id) {
+              await handleIncomingMessageNotification(m);
+            } else {
+              notifiedMsgIds.add(m.id);
+            }
+          }
+        }
+        if (hasNew) {
+          await preloadAllRoomsMessages();
+          if (activeRoom) await loadMessages(activeRoom.id);
+        }
+      } catch (e) {}
+    }, 2800);
 
     setInterval(async () => {
       if (!currentUser || !supabaseClient) return;
@@ -2110,12 +2177,13 @@
   });
 
   async function loadMessages(roomId) {
-    const { data, error } = await supabaseClient
+    const { data: descMsgs, error } = await supabaseClient
       .from('messages')
       .select('*')
       .eq('room_id', roomId)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
       .limit(350);
+    const data = descMsgs ? [...descMsgs].reverse() : null;
 
     if (error) return;
     const fetched = data || [];
@@ -3955,6 +4023,15 @@
       .on('broadcast', { event: 'call-signal' }, ({ payload }) => {
         handleIncomingCallSignal(payload);
       })
+      .on('broadcast', { event: 'new-message' }, async ({ payload }) => {
+        if (!payload || !currentUser || payload.sender_id === currentUser.id) return;
+        await handleIncomingMessageNotification(payload);
+        if (activeRoom && payload.room_id === activeRoom.id) {
+          await loadMessages(activeRoom.id);
+        } else {
+          await preloadAllRoomsMessages();
+        }
+      })
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'messages' },
@@ -5694,7 +5771,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=20').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=24').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
