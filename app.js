@@ -5207,9 +5207,259 @@
     renderV18RichMessages();
   }
 
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v19 (Часть 1: Отложенные сообщения, Озвучивание и Перевод)
+  const scheduleMsgBtn = document.getElementById('scheduleMsgBtn');
+  const scheduleModal = document.getElementById('scheduleModal');
+  const scheduleTextInput = document.getElementById('scheduleTextInput');
+  const schedMinBtns = Array.from(document.querySelectorAll('[data-sched-mins]'));
+  const scheduledPendingList = document.getElementById('scheduledPendingList');
+  const confirmScheduleBtn = document.getElementById('confirmScheduleBtn');
+  const cancelScheduleModalBtn = document.getElementById('cancelScheduleModalBtn');
+  const sheetSpeakBtn = document.getElementById('sheetSpeakBtn');
+  const sheetTranslateBtn = document.getElementById('sheetTranslateBtn');
+  const forceRefreshCacheBtn = document.getElementById('forceRefreshCacheBtn');
+  const pingStatusText = document.getElementById('pingStatusText');
+
+  let selectedScheduleMins = 1;
+
+  function getScheduledQueue() {
+    try { return JSON.parse(localStorage.getItem('pulse_scheduled_queue') || '[]'); }
+    catch (e) { return []; }
+  }
+
+  function saveScheduledQueue(list) {
+    localStorage.setItem('pulse_scheduled_queue', JSON.stringify(list || []));
+  }
+
+  function renderScheduledPendingList() {
+    if (!scheduledPendingList) return;
+    const list = getScheduledQueue();
+    if (!list.length) {
+      scheduledPendingList.innerHTML = 'Нет запланированных сообщений';
+      return;
+    }
+    scheduledPendingList.innerHTML = '';
+    list.forEach((item) => {
+      const row = document.createElement('div');
+      row.className = 'scheduled-item-pill';
+      const timeStr = new Date(item.sendAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      const span = document.createElement('span');
+      span.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+      span.textContent = `⏰ ${timeStr} — ${item.text}`;
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'toast-close';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', () => {
+        saveScheduledQueue(getScheduledQueue().filter((x) => x.id !== item.id));
+        renderScheduledPendingList();
+      });
+      row.appendChild(span);
+      row.appendChild(delBtn);
+      scheduledPendingList.appendChild(row);
+    });
+  }
+
+  schedMinBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      selectedScheduleMins = Number(btn.getAttribute('data-sched-mins') || 1);
+      schedMinBtns.forEach((b) => b.classList.toggle('active', b === btn));
+    });
+  });
+
+  if (scheduleMsgBtn && scheduleModal) {
+    scheduleMsgBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      if (emojiDrawer) emojiDrawer.classList.add('hidden');
+      if (scheduleTextInput && messageInput) {
+        scheduleTextInput.value = messageInput.value.trim();
+      }
+      renderScheduledPendingList();
+      scheduleModal.classList.remove('hidden');
+    });
+
+    if (cancelScheduleModalBtn) {
+      cancelScheduleModalBtn.addEventListener('click', () => scheduleModal.classList.add('hidden'));
+    }
+
+    if (confirmScheduleBtn) {
+      confirmScheduleBtn.addEventListener('click', () => {
+        if (!activeRoom) return;
+        const txt = (scheduleTextInput ? scheduleTextInput.value : '').trim();
+        if (!txt) return alert('Введите текст сообщения');
+        triggerHaptic('medium');
+        const list = getScheduledQueue();
+        list.push({
+          id: `sched_${Date.now()}`,
+          roomId: activeRoom.id,
+          text: txt,
+          sendAt: Date.now() + selectedScheduleMins * 60 * 1000
+        });
+        saveScheduledQueue(list);
+        if (messageInput && messageInput.value.trim() === txt) {
+          messageInput.value = '';
+          messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        scheduleModal.classList.add('hidden');
+        showInAppToast({
+          title: 'Отложенное сообщение ⏰',
+          text: `Будет отправлено через ${selectedScheduleMins} мин.`,
+          peer: null,
+          roomId: activeRoom.id
+        });
+      });
+    }
+  }
+
+  // Фоновый таймер отправки запланированных сообщений
+  setInterval(async () => {
+    if (!currentUser || !supabaseClient) return;
+    const list = getScheduledQueue();
+    if (!list.length) return;
+    const now = Date.now();
+    const due = list.filter((x) => x.sendAt <= now);
+    if (!due.length) return;
+    saveScheduledQueue(list.filter((x) => x.sendAt > now));
+
+    for (const item of due) {
+      try {
+        const room = myRooms.find((r) => r.id === item.roomId) || activeRoom;
+        if (!room) continue;
+        const enc = await encryptTextForRoom(`⏰ ${item.text}`, room);
+        await insertMessageRow({
+          room_id: room.id,
+          content: enc,
+          media_type: 'text'
+        });
+        showInAppToast({
+          title: 'Отправлено по таймеру ⏰',
+          text: item.text,
+          peer: null,
+          roomId: room.id
+        });
+      } catch (e) {}
+    }
+  }, 4500);
+
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v19 (Часть 2: Озвучка, Перевод RU/EN, Drag & Drop файлов, Кэш и Пинг)
+  if (sheetSpeakBtn) {
+    sheetSpeakBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      if (msgActionModal) msgActionModal.classList.add('hidden');
+      const txt = selectedMsgContext && selectedMsgContext.cleanText ? selectedMsgContext.cleanText.trim() : '';
+      if (!txt || !('speechSynthesis' in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const utt = new SpeechSynthesisUtterance(txt);
+        utt.lang = /[а-яА-ЯёЁ]/.test(txt) ? 'ru-RU' : 'en-US';
+        utt.rate = 1.04;
+        window.speechSynthesis.speak(utt);
+      } catch (e) {}
+    });
+  }
+
+  if (sheetTranslateBtn) {
+    sheetTranslateBtn.addEventListener('click', async () => {
+      triggerHaptic('light');
+      if (msgActionModal) msgActionModal.classList.add('hidden');
+      const txt = selectedMsgContext && selectedMsgContext.cleanText ? selectedMsgContext.cleanText.trim() : '';
+      const msgId = selectedMsgContext && selectedMsgContext.msg ? selectedMsgContext.msg.id : null;
+      if (!txt) return;
+      const isRussian = /[а-яА-ЯёЁ]/.test(txt);
+      const langPair = isRussian ? 'ru|en' : 'en|ru';
+      try {
+        const res = await fetch(
+          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(txt.slice(0, 450))}&langpair=${langPair}`
+        );
+        const json = await res.json();
+        const translated =
+          json && json.responseData && json.responseData.translatedText
+            ? json.responseData.translatedText
+            : '';
+        if (!translated) return;
+
+        if (messagesViewport && msgId) {
+          const row = messagesViewport.querySelector(`[data-msg-id="${msgId}"]`);
+          const bubble = row ? row.querySelector('.msg-bubble') : null;
+          if (bubble) {
+            const oldBox = bubble.querySelector('.msg-translation-box');
+            if (oldBox) oldBox.remove();
+            const box = document.createElement('div');
+            box.className = 'msg-translation-box';
+            box.innerHTML = `<div class="msg-translation-label">🌐 Перевод (${isRussian ? 'EN' : 'RU'})</div><div></div>`;
+            box.lastElementChild.textContent = translated;
+            bubble.appendChild(box);
+            return;
+          }
+        }
+        showInAppToast({
+          title: `Перевод 🌐 (${isRussian ? 'EN' : 'RU'})`,
+          text: translated,
+          peer: null,
+          roomId: activeRoom ? activeRoom.id : null
+        });
+      } catch (e) {}
+    });
+  }
+
+  // Перетаскивание файлов и фотографий мышью прямо в окно чата (Drag & Drop)
+  if (activeChatView && attachmentInput) {
+    activeChatView.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      activeChatView.classList.add('drag-over-chat');
+    });
+    activeChatView.addEventListener('dragleave', (e) => {
+      if (e.target === activeChatView) activeChatView.classList.remove('drag-over-chat');
+    });
+    activeChatView.addEventListener('drop', (e) => {
+      e.preventDefault();
+      activeChatView.classList.remove('drag-over-chat');
+      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+      triggerHaptic('medium');
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(e.dataTransfer.files[0]);
+        attachmentInput.files = dt.files;
+        attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (err) {}
+    });
+  }
+
+  // Быстрое обновление кэша и проверка пинга в Настройках
+  if (forceRefreshCacheBtn) {
+    forceRefreshCacheBtn.addEventListener('click', async () => {
+      triggerHaptic('medium');
+      forceRefreshCacheBtn.textContent = 'Обновляем...';
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        }
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map((r) => r.update()));
+        }
+      } catch (e) {}
+      window.location.reload();
+    });
+  }
+
+  if (myProfileTrigger && pingStatusText) {
+    myProfileTrigger.addEventListener('click', async () => {
+      if (!supabaseClient) return;
+      const t0 = performance.now();
+      try {
+        await supabaseClient.from('rooms').select('id').limit(1);
+        const ms = Math.max(12, Math.round(performance.now() - t0));
+        pingStatusText.textContent = `⚡ Пинг: ${ms} мс • AES-256 активен`;
+      } catch (e) {}
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=18').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=19').catch(() => {});
     });
   }
 

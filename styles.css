@@ -1215,6 +1215,58 @@ input, textarea {
   flex-shrink: 0;
 }
 
+/* Перевод сообщений, Drag-and-Drop подсветка и отложенные сообщения (v19) */
+.msg-translation-box {
+  margin-top: 6px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.22);
+  border-left: 3px solid rgba(255, 255, 255, 0.65);
+  font-size: 0.92em;
+  line-height: 1.35;
+}
+
+.msg-translation-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  opacity: 0.8;
+  margin-bottom: 2px;
+}
+
+#activeChatView.drag-over-chat::after {
+  content: "📂 Отпустите файл или фото для отправки в чат";
+  position: absolute;
+  inset: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: 20px;
+  background: rgba(9, 13, 22, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  pointer-events: none;
+}
+
+.scheduled-item-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--text-main);
+}
+
 .section-bar {
   padding: 6px 14px 6px 16px;
   display: flex;

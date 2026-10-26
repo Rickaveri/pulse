@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=18" />
+  <link rel="stylesheet" href="./styles.css?v=19" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=18"></script>
+  <script src="./config.js?v=19"></script>
 </head>
 <body>
 
@@ -196,7 +196,14 @@
 
       <!-- Секция Пригласить друга и Выход -->
       <div class="settings-section">
-        <div class="settings-section-title">Друзья и аккаунт</div>
+        <div class="settings-section-title">Диагностика, друзья и аккаунт</div>
+        <div class="settings-row" style="margin-bottom:10px;">
+          <div>
+            <div>Соединение и кэш v19</div>
+            <div id="pingStatusText" style="font-size:11.5px; color:var(--success); margin-top:2px;">⚡ Стабильно • AES-256 активен</div>
+          </div>
+          <button id="forceRefreshCacheBtn" class="new-group-pill" type="button" style="padding:7px 12px;">Обновить кэш</button>
+        </div>
         <button id="shareInviteBtn" class="btn-ghost" type="button" style="color:var(--text-main); border-color:var(--accent); margin-bottom:6px;">🔗 Поделиться ссылкой на мессенджер</button>
         <button id="requestLogoutBtn" class="btn-danger" type="button">Выйти из аккаунта</button>
       </div>
@@ -262,6 +269,14 @@
       <button id="sheetCopyBtn" class="sheet-item hidden" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         <span>Скопировать текст</span>
+      </button>
+      <button id="sheetSpeakBtn" class="sheet-item" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        <span>Озвучить сообщение</span>
+      </button>
+      <button id="sheetTranslateBtn" class="sheet-item" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span>Перевести текст (RU / EN)</span>
       </button>
       <button id="sheetDownloadBtn" class="sheet-item hidden" type="button">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -595,6 +610,7 @@
           </div>
           <button id="insertSpoilerBtn" class="dictate-pill-btn" type="button" title="Скрытый текст-спойлер">👁️ Спойлер</button>
           <button id="createChecklistBtn" class="dictate-pill-btn" type="button" title="Создать интерактивный список задач">☑️ Список</button>
+          <button id="scheduleMsgBtn" class="dictate-pill-btn" type="button" title="Отложенная отправка сообщения по таймеру">⏰ Таймер</button>
           <button id="sendLocationBtn" class="dictate-pill-btn" type="button" title="Отправить текущую геолокацию">📍 Гео</button>
           <button id="createPollBtn" class="dictate-pill-btn" type="button" title="Создать опрос в чате">📊 Опрос</button>
           <button id="voiceDictateBtn" class="dictate-pill-btn" type="button" title="Голосовой ввод текста">🎙️ Диктовка</button>
@@ -693,6 +709,30 @@
     </div>
   </div>
 
-  <script src="./app.js?v=18"></script>
+  <!-- Модальное окно отложенных сообщений и напоминаний (v19) -->
+  <div id="scheduleModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:370px;">
+      <h2 style="font-size:18px; margin-bottom:6px;">⏰ Отложенное сообщение</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:12px;">Сообщение или напоминание будет отправлено автоматически в выбранное время.</p>
+      <div class="field-group">
+        <label for="scheduleTextInput">Текст сообщения / напоминания</label>
+        <input id="scheduleTextInput" class="input-field" type="text" placeholder="Введите текст..." autocomplete="off" />
+      </div>
+      <div class="field-group">
+        <label>Когда отправить</label>
+        <div class="theme-pills" style="flex-wrap:wrap;">
+          <button type="button" class="theme-pill active" data-sched-mins="1">Через 1 мин</button>
+          <button type="button" class="theme-pill" data-sched-mins="15">Через 15 мин</button>
+          <button type="button" class="theme-pill" data-sched-mins="60">Через 1 час</button>
+          <button type="button" class="theme-pill" data-sched-mins="180">Через 3 часа</button>
+        </div>
+      </div>
+      <div id="scheduledPendingList" style="font-size:12px; color:var(--text-muted); margin-bottom:10px;"></div>
+      <button id="confirmScheduleBtn" class="btn-primary" type="button">Запланировать отправку</button>
+      <button id="cancelScheduleModalBtn" class="btn-ghost" type="button">Отмена</button>
+    </div>
+  </div>
+
+  <script src="./app.js?v=19"></script>
 </body>
 </html>
