@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=17" />
+  <link rel="stylesheet" href="./styles.css?v=18" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=17"></script>
+  <script src="./config.js?v=18"></script>
 </head>
 <body>
 
@@ -170,6 +170,12 @@
           <button type="button" class="theme-pill" data-set-wallpaper="dots">Матрица</button>
           <button type="button" class="theme-pill" data-set-wallpaper="stars">Космос</button>
           <button type="button" class="theme-pill" data-set-wallpaper="clean">Чистый</button>
+        </div>
+        <div class="settings-section-title" style="margin-top:10px;">Размер текста в чатах</div>
+        <div id="fontSizePills" class="theme-pills">
+          <button type="button" class="theme-pill" data-set-fontsize="14px">Компактный</button>
+          <button type="button" class="theme-pill active" data-set-fontsize="15px">Обычный</button>
+          <button type="button" class="theme-pill" data-set-fontsize="17px">Крупный</button>
         </div>
 
         <div class="settings-row">
@@ -399,7 +405,8 @@
         <div id="sharedMediaGrid" class="shared-media-grid"></div>
       </div>
 
-      <button id="closePeerModalBtn" class="btn-ghost" type="button" style="margin-top:16px;">Закрыть</button>
+      <button id="exportChatHistoryBtn" class="btn-ghost" type="button" style="margin-top:12px; color:var(--text-main); border-color:var(--accent);">💾 Скачать историю чата (.txt)</button>
+      <button id="closePeerModalBtn" class="btn-ghost" type="button" style="margin-top:8px;">Закрыть</button>
     </div>
   </div>
 
@@ -586,6 +593,9 @@
             <button type="button" class="emoji-quick-item" data-insert-emoji="🙏">🙏</button>
             <button type="button" class="emoji-quick-item" data-insert-emoji="💯">💯</button>
           </div>
+          <button id="insertSpoilerBtn" class="dictate-pill-btn" type="button" title="Скрытый текст-спойлер">👁️ Спойлер</button>
+          <button id="createChecklistBtn" class="dictate-pill-btn" type="button" title="Создать интерактивный список задач">☑️ Список</button>
+          <button id="sendLocationBtn" class="dictate-pill-btn" type="button" title="Отправить текущую геолокацию">📍 Гео</button>
           <button id="createPollBtn" class="dictate-pill-btn" type="button" title="Создать опрос в чате">📊 Опрос</button>
           <button id="voiceDictateBtn" class="dictate-pill-btn" type="button" title="Голосовой ввод текста">🎙️ Диктовка</button>
         </div>
@@ -662,6 +672,27 @@
     </div>
   </div>
 
-  <script src="./app.js?v=17"></script>
+  <!-- Модальное окно создания интерактивного чек-листа в чате (v18) -->
+  <div id="checklistModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:370px;">
+      <h2 style="font-size:18px; margin-bottom:6px;">☑️ Создать чек-лист</h2>
+      <p style="font-size:12.5px; color:var(--text-muted); margin-bottom:12px;">Отмечайте выполненные пункты прямо внутри переписки.</p>
+      <div class="field-group">
+        <label for="checklistTitleInput">Название списка</label>
+        <input id="checklistTitleInput" class="input-field" type="text" placeholder="Например: Список покупок или План на день" autocomplete="off" />
+      </div>
+      <div class="field-group">
+        <label>Пункты задач</label>
+        <input id="chkItem1" class="input-field" type="text" placeholder="Задача 1" style="margin-bottom:6px;" autocomplete="off" />
+        <input id="chkItem2" class="input-field" type="text" placeholder="Задача 2" style="margin-bottom:6px;" autocomplete="off" />
+        <input id="chkItem3" class="input-field" type="text" placeholder="Задача 3 (необязательно)" style="margin-bottom:6px;" autocomplete="off" />
+        <input id="chkItem4" class="input-field" type="text" placeholder="Задача 4 (необязательно)" autocomplete="off" />
+      </div>
+      <button id="sendChecklistConfirmBtn" class="btn-primary" type="button">Отправить список</button>
+      <button id="cancelChecklistModalBtn" class="btn-ghost" type="button">Отмена</button>
+    </div>
+  </div>
+
+  <script src="./app.js?v=18"></script>
 </body>
 </html>

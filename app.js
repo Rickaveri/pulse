@@ -4919,9 +4919,297 @@
     syncMarkAllReadVisibility();
   }
 
+  // =========================================================================
+  // МОДУЛЬ ОБНОВЛЕНИЯ PULSE v18:
+  // 1) Регулятор размера шрифта сообщений в Настройках (Компактный / Обычный / Крупный)
+  // 2) Скрытый текст-спойлер ||спойлер|| с размытием и раскрытием по нажатию (👁️ Спойлер)
+  // 3) Интерактивные списки задач в чатах и Избранном (☑️ Список)
+  // 4) Отправка геолокации в 1 клик с карточкой карты (📍 Гео)
+  // 5) Экспорт истории переписки в текстовый файл (.txt) в окне информации о чате
+  // =========================================================================
+  const fontSizeBtns = Array.from(document.querySelectorAll('[data-set-fontsize]'));
+  const insertSpoilerBtn = document.getElementById('insertSpoilerBtn');
+  const createChecklistBtn = document.getElementById('createChecklistBtn');
+  const sendLocationBtn = document.getElementById('sendLocationBtn');
+  const checklistModal = document.getElementById('checklistModal');
+  const checklistTitleInput = document.getElementById('checklistTitleInput');
+  const chkItem1 = document.getElementById('chkItem1');
+  const chkItem2 = document.getElementById('chkItem2');
+  const chkItem3 = document.getElementById('chkItem3');
+  const chkItem4 = document.getElementById('chkItem4');
+  const sendChecklistConfirmBtn = document.getElementById('sendChecklistConfirmBtn');
+  const cancelChecklistModalBtn = document.getElementById('cancelChecklistModalBtn');
+  const exportChatHistoryBtn = document.getElementById('exportChatHistoryBtn');
+
+  // 1. Размер шрифта сообщений
+  function applySavedFontSize() {
+    const savedSize = localStorage.getItem('pulse_font_size') || '15px';
+    document.documentElement.style.setProperty('--msg-font-size', savedSize);
+    fontSizeBtns.forEach((b) =>
+      b.classList.toggle('active', b.getAttribute('data-set-fontsize') === savedSize)
+    );
+  }
+
+  fontSizeBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const sz = btn.getAttribute('data-set-fontsize') || '15px';
+      localStorage.setItem('pulse_font_size', sz);
+      applySavedFontSize();
+    });
+  });
+  applySavedFontSize();
+
+  // 2. Вставка спойлера ||текст||
+  if (insertSpoilerBtn && messageInput) {
+    insertSpoilerBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const start = messageInput.selectionStart || 0;
+      const end = messageInput.selectionEnd || 0;
+      const val = messageInput.value;
+      if (end > start) {
+        const selected = val.slice(start, end);
+        messageInput.value = val.slice(0, start) + `||${selected}||` + val.slice(end);
+      } else {
+        messageInput.value = val + (val && !val.endsWith(' ') ? ' ' : '') + '||секрет||';
+      }
+      messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+      messageInput.focus();
+    });
+  }
+
+  // 3. Модальное окно создания интерактивного чек-листа
+  if (createChecklistBtn && checklistModal) {
+    createChecklistBtn.addEventListener('click', () => {
+      triggerHaptic('light');
+      if (emojiDrawer) emojiDrawer.classList.add('hidden');
+      if (checklistTitleInput) checklistTitleInput.value = '';
+      [chkItem1, chkItem2, chkItem3, chkItem4].forEach((el) => { if (el) el.value = ''; });
+      checklistModal.classList.remove('hidden');
+      setTimeout(() => { if (checklistTitleInput) checklistTitleInput.focus(); }, 60);
+    });
+
+    if (cancelChecklistModalBtn) {
+      cancelChecklistModalBtn.addEventListener('click', () => checklistModal.classList.add('hidden'));
+    }
+
+    if (sendChecklistConfirmBtn && messageInput && smartActionBtn) {
+      sendChecklistConfirmBtn.addEventListener('click', () => {
+        const title = (checklistTitleInput ? checklistTitleInput.value : '').trim() || 'Список задач';
+        const tasks = [chkItem1, chkItem2, chkItem3, chkItem4]
+          .map((el) => (el ? el.value.trim() : ''))
+          .filter(Boolean);
+        if (tasks.length === 0) {
+          alert('Добавьте хотя бы одну задачу в список');
+          return;
+        }
+        triggerHaptic('medium');
+        checklistModal.classList.add('hidden');
+        messageInput.value = `☑️ ЧЕК-ЛИСТ: ${title}\n` + tasks.map((t, i) => `[${i + 1}] ${t}`).join('\n');
+        messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        smartActionBtn.click();
+      });
+    }
+  }
+
+  // 4. Отправка текущей геолокации в 1 клик (📍 Гео)
+  if (sendLocationBtn && messageInput && smartActionBtn) {
+    sendLocationBtn.addEventListener('click', () => {
+      triggerHaptic('medium');
+      if (!navigator.geolocation) {
+        alert('Геолокация не поддерживается на этом устройстве');
+        return;
+      }
+      sendLocationBtn.textContent = '📍 Поиск...';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          sendLocationBtn.textContent = '📍 Гео';
+          if (emojiDrawer) emojiDrawer.classList.add('hidden');
+          const lat = pos.coords.latitude.toFixed(5);
+          const lng = pos.coords.longitude.toFixed(5);
+          messageInput.value = `📍 ГЕОЛОКАЦИЯ: ${lat},${lng}`;
+          messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+          smartActionBtn.click();
+        },
+        () => {
+          sendLocationBtn.textContent = '📍 Гео';
+          alert('Разрешите доступ к геолокации в настройках браузера');
+        },
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    });
+  }
+
+  // 5. Экспорт истории чата в файл .txt
+  if (exportChatHistoryBtn) {
+    exportChatHistoryBtn.addEventListener('click', () => {
+      triggerHaptic('medium');
+      if (!messagesViewport || !activeRoom) return;
+      const roomTitle = activeRoomTitle ? activeRoomTitle.textContent.trim() : 'chat';
+      const rows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
+      const lines = [`=== История переписки Pulse: ${roomTitle} ===`, `Экспортировано: ${new Date().toLocaleString('ru-RU')}`, ''];
+      rows.forEach((r) => {
+        const isMine = r.classList.contains('own') || r.classList.contains('mine');
+        const authorEl = r.querySelector('.msg-author');
+        const sender = isMine ? 'Вы' : (authorEl ? authorEl.textContent.trim() : roomTitle);
+        const bubble = r.querySelector('.msg-bubble');
+        if (!bubble) return;
+        const text = bubble.textContent.replace(/\s+/g, ' ').trim();
+        lines.push(`[${sender}]: ${text}`);
+      });
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pulse_${roomTitle.replace(/[^a-zA-Zа-яА-Я0-9_-]/g, '_')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    });
+  }
+
+  // Отрисовка спойлеров ||...||, интерактивных чек-листов и карточек геолокации в ленте
+  function renderV18RichMessages() {
+    if (!messagesViewport) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-bubble')).forEach((bubble) => {
+      if (bubble.dataset.v18Processed) return;
+      const raw = bubble.textContent || '';
+
+      // А) Интерактивный чек-лист
+      if (raw.includes('☑️ ЧЕК-ЛИСТ:')) {
+        bubble.dataset.v18Processed = '1';
+        const metaEl = bubble.querySelector('.msg-meta');
+        const clone = bubble.cloneNode(true);
+        const cMeta = clone.querySelector('.msg-meta');
+        if (cMeta) cMeta.remove();
+        clone.querySelectorAll('.reaction-chip-pill').forEach((r) => r.remove());
+
+        const lines = clone.textContent.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+        const hdr = lines.find((l) => l.startsWith('☑️ ЧЕК-ЛИСТ:'));
+        if (hdr) {
+          const title = hdr.replace('☑️ ЧЕК-ЛИСТ:', '').trim();
+          const tasks = lines
+            .filter((l) => /^\[\d+\]\s+/.test(l))
+            .map((l) => l.replace(/^\[\d+\]\s+/, '').trim());
+          if (tasks.length > 0) {
+            const stateKey = `pulse_chk_${title.slice(0, 28)}_${tasks.length}`;
+            const card = document.createElement('div');
+            card.className = 'checklist-card';
+
+            const renderTasks = () => {
+              let doneSet = new Set();
+              try { doneSet = new Set(JSON.parse(localStorage.getItem(stateKey) || '[]')); } catch (e) {}
+              card.innerHTML = `
+                <div class="checklist-badge">☑️ Список задач (${doneSet.size}/${tasks.length})</div>
+                <div class="checklist-title"></div>
+                <div class="checklist-items-wrap"></div>
+              `;
+              card.querySelector('.checklist-title').textContent = title;
+              const wrap = card.querySelector('.checklist-items-wrap');
+              tasks.forEach((tText, idx) => {
+                const isDone = doneSet.has(idx);
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'checklist-item-btn' + (isDone ? ' done' : '');
+                btn.textContent = `${isDone ? '☑️' : '⬜'} ${tText}`;
+                btn.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  triggerHaptic('light');
+                  if (doneSet.has(idx)) doneSet.delete(idx); else doneSet.add(idx);
+                  localStorage.setItem(stateKey, JSON.stringify(Array.from(doneSet)));
+                  renderTasks();
+                });
+                wrap.appendChild(btn);
+              });
+            };
+
+            renderTasks();
+            bubble.innerHTML = '';
+            bubble.appendChild(card);
+            if (metaEl) bubble.appendChild(metaEl);
+            return;
+          }
+        }
+      }
+
+      // Б) Карточка геолокации
+      if (raw.includes('📍 ГЕОЛОКАЦИЯ:')) {
+        bubble.dataset.v18Processed = '1';
+        const match = raw.match(/📍 ГЕОЛОКАЦИЯ:\s*([-0-9.]+),([-0-9.]+)/);
+        if (match) {
+          const lat = match[1];
+          const lng = match[2];
+          const metaEl = bubble.querySelector('.msg-meta');
+          const locLink = document.createElement('a');
+          locLink.className = 'location-card';
+          locLink.href = `https://www.google.com/maps?q=${lat},${lng}`;
+          locLink.target = '_blank';
+          locLink.rel = 'noopener noreferrer';
+          locLink.innerHTML = `
+            <div class="location-pin-icon">📍</div>
+            <div style="min-width:0; flex:1;">
+              <div style="font-weight:700; font-size:14px;">Точка на карте</div>
+              <div style="font-size:11.5px; opacity:0.85;">${lat}, ${lng} • Открыть карту ↗</div>
+            </div>
+          `;
+          locLink.addEventListener('click', (e) => e.stopPropagation());
+          bubble.innerHTML = '';
+          bubble.appendChild(locLink);
+          if (metaEl) bubble.appendChild(metaEl);
+          return;
+        }
+      }
+
+      // В) Текст-спойлер ||скрытый текст||
+      if (raw.includes('||')) {
+        bubble.dataset.v18Processed = '1';
+        Array.from(bubble.childNodes).forEach((node) => {
+          if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.includes('||')) {
+            const parts = node.nodeValue.split(/\|\|([^|]+)\|\|/g);
+            if (parts.length > 1) {
+              const frag = document.createDocumentFragment();
+              parts.forEach((part, idx) => {
+                if (idx % 2 === 1) {
+                  const sp = document.createElement('span');
+                  sp.className = 'msg-spoiler';
+                  sp.title = 'Нажмите, чтобы показать скрытый текст';
+                  sp.textContent = part;
+                  sp.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    triggerHaptic('light');
+                    sp.classList.toggle('revealed');
+                  });
+                  frag.appendChild(sp);
+                } else if (part) {
+                  frag.appendChild(document.createTextNode(part));
+                }
+              });
+              bubble.replaceChild(frag, node);
+            }
+          }
+        });
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    let v18Raf = false;
+    const v18Obs = new MutationObserver(() => {
+      if (v18Raf) return;
+      v18Raf = true;
+      requestAnimationFrame(() => {
+        v18Raf = false;
+        renderV18RichMessages();
+      });
+    });
+    v18Obs.observe(messagesViewport, { childList: true });
+    renderV18RichMessages();
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=17').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=18').catch(() => {});
     });
   }
 
