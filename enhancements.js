@@ -485,9 +485,149 @@
   window.addEventListener("touchstart", startIosBackgroundKeepAlive, { once: true, passive: true });
   window.addEventListener("click", startIosBackgroundKeepAlive, { once: true });
 
+
+  // =========================================================================
+  // 11. ОБНОВЛЕНИЕ v35: Двойной тап ❤️ с анимацией, Умные быстрые ответы и Индикатор качества звонка (Ping)
+  // =========================================================================
+
+  // А) Двойной тап / двойной клик по сообщению -> мгновенная реакция ❤️ с вылетающим сердцем
+  let lastBubbleTapTime = 0;
+  let lastTappedBubble = null;
+
+  function triggerHeartBurstOnBubble(bubble, clientX, clientY) {
+    if (!bubble) return;
+    const heart = document.createElement('div');
+    heart.className = 'dbltap-heart-burst';
+    heart.textContent = '❤️';
+    const rect = bubble.getBoundingClientRect();
+    const x = clientX || (rect.left + rect.width / 2);
+    const y = clientY || (rect.top + rect.height / 2);
+    heart.style.left = `${x}px`;
+    heart.style.top = `${y}px`;
+    document.body.appendChild(heart);
+    setTimeout(() => heart.remove(), 750);
+
+    // Открываем меню реакций или сразу кликаем ❤️
+    const rightClickEvt = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y
+    });
+    bubble.dispatchEvent(rightClickEvt);
+    setTimeout(() => {
+      const heartBtn = document.querySelector('[data-react="❤️"]');
+      if (heartBtn) heartBtn.click();
+    }, 35);
+  }
+
+  if (messagesViewport) {
+    messagesViewport.addEventListener('dblclick', (e) => {
+      const bubble = e.target.closest('.msg-bubble');
+      if (!bubble) return;
+      e.preventDefault();
+      triggerHeartBurstOnBubble(bubble, e.clientX, e.clientY);
+    });
+
+    messagesViewport.addEventListener('touchend', (e) => {
+      const bubble = e.target.closest('.msg-bubble');
+      if (!bubble || e.target.closest('button, a, audio, video, .spoiler-mask')) return;
+      const now = Date.now();
+      if (lastTappedBubble === bubble && (now - lastBubbleTapTime) < 280) {
+        lastBubbleTapTime = 0;
+        lastTappedBubble = null;
+        const touch = (e.changedTouches && e.changedTouches[0]) || null;
+        triggerHeartBurstOnBubble(bubble, touch ? touch.clientX : 0, touch ? touch.clientY : 0);
+      } else {
+        lastBubbleTapTime = now;
+        lastTappedBubble = bubble;
+      }
+    }, { passive: true });
+  }
+
+  // Б) Умные быстрые ответы (Smart Quick Replies) над строкой ввода, когда собеседник прислал вопрос или приветствие
+  const composerWrap = document.querySelector('.chat-composer') || (messageInput && messageInput.parentElement);
+  let smartRepliesBar = document.getElementById('smartQuickRepliesBar');
+  if (!smartRepliesBar && composerWrap && composerWrap.parentElement) {
+    smartRepliesBar = document.createElement('div');
+    smartRepliesBar.id = 'smartQuickRepliesBar';
+    smartRepliesBar.className = 'smart-quick-replies-bar hidden';
+    composerWrap.parentElement.insertBefore(smartRepliesBar, composerWrap);
+  }
+
+  let lastEvaluatedIncomingText = '';
+  function updateSmartQuickReplies() {
+    if (!smartRepliesBar || !messagesViewport || !messageInput) return;
+    const rows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
+    if (!rows.length) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+    const lastRow = rows[rows.length - 1];
+    if (lastRow.classList.contains('mine')) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+    const bubble = lastRow.querySelector('.msg-bubble');
+    if (!bubble) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+    const rawText = (bubble.textContent || '').trim().toLowerCase();
+    if (!rawText || rawText === lastEvaluatedIncomingText) return;
+    lastEvaluatedIncomingText = rawText;
+
+    let suggestions = [];
+    if (rawText.includes('привет') || rawText.includes('здравствуй') || rawText.includes('добр')) {
+      suggestions = ['Привет! 👋', 'Привет, как дела?', 'На связи! ✨'];
+    } else if (rawText.includes('звонок') || rawText.includes('позвон') || rawText.includes('созвон')) {
+      suggestions = ['Давай созвонимся 📞', 'Наберу через 5 мин', 'Сейчас не могу говорить'];
+    } else if (rawText.includes('?')) {
+      suggestions = ['👍 Да!', 'Сейчас гляну 👀', 'Ок, договорились 🤝', 'Чуть позже напишу'];
+    } else if (rawText.length > 2) {
+      suggestions = ['👍 Супер!', 'Понял, спасибо!', 'Ок 👌'];
+    }
+
+    if (!suggestions.length) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+
+    smartRepliesBar.innerHTML = '';
+    suggestions.forEach((txt) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'smart-reply-chip';
+      chip.textContent = txt;
+      chip.addEventListener('click', () => {
+        smartRepliesBar.classList.add('hidden');
+        messageInput.value = txt;
+        messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        const sendBtn = document.getElementById('smartActionBtn');
+        if (sendBtn) sendBtn.click();
+      });
+      smartRepliesBar.appendChild(chip);
+    });
+    smartRepliesBar.classList.remove('hidden');
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    const srObs = new MutationObserver(() => {
+      requestAnimationFrame(updateSmartQuickReplies);
+    });
+    srObs.observe(messagesViewport, { childList: true });
+  }
+  if (messageInput) {
+    messageInput.addEventListener('input', () => {
+      if (messageInput.value.trim().length > 0 && smartRepliesBar) {
+        smartRepliesBar.classList.add('hidden');
+      }
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=34').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=35').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

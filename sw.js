@@ -1,14 +1,14 @@
-const CACHE_NAME = 'pulse-pwa-v34';
+const CACHE_NAME = 'pulse-pwa-v35';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=34',
-  './config.js?v=34',
-  './app.js?v=34',
-  './enhancements.js?v=34',
+  './styles.css?v=35',
+  './config.js?v=35',
+  './app.js?v=35',
+  './enhancements.js?v=35',
   './manifest.json'
 ];
 
@@ -111,13 +111,22 @@ self.addEventListener('push', (event) => {
       } catch (e) {}
     }
 
-    await self.registration.showNotification(title, {
+    const isIncomingCall = body.includes('Входящий аудиозвонок') || body.includes('Входящий видеозвонок');
+    const notifOpts = {
       body,
-      tag: `pulse-push-${Date.now()}`,
+      tag: isIncomingCall ? 'pulse-incoming-call' : `pulse-push-${Date.now()}`,
       renotify: true,
-      vibrate: [220, 100, 220],
-      data: { roomId }
-    });
+      requireInteraction: isIncomingCall,
+      vibrate: isIncomingCall ? [300, 150, 300, 150, 300] : [220, 100, 220],
+      data: { roomId, isCall: isIncomingCall }
+    };
+    if (isIncomingCall) {
+      notifOpts.actions = [
+        { action: 'accept_call', title: '📞 Ответить' },
+        { action: 'decline_call', title: '✕ Отклонить' }
+      ];
+    }
+    await self.registration.showNotification(title, notifOpts);
   };
 
   event.waitUntil(handlePushWake());
@@ -126,20 +135,25 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetRoomId = event.notification.data && event.notification.data.roomId;
+  const isCall = Boolean(event.notification.data && event.notification.data.isCall);
+  const act = event.action || (isCall ? 'accept_call' : '');
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if ('focus' in client) {
           client.focus();
-          if (targetRoomId) {
-            client.postMessage({ type: 'OPEN_ROOM', roomId: targetRoomId });
-          }
+          client.postMessage({
+            type: 'OPEN_ROOM',
+            roomId: targetRoomId || null,
+            callAction: act
+          });
           return;
         }
       }
       if (self.clients.openWindow) {
-        return self.clients.openWindow('./index.html');
+        const q = targetRoomId ? `?roomId=${encodeURIComponent(targetRoomId)}&callAction=${encodeURIComponent(act)}` : '';
+        return self.clients.openWindow(`./index.html${q}`);
       }
     })
   );

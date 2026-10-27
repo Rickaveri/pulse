@@ -4196,6 +4196,12 @@
       };
       sendOfferBroadcast();
       activeCallState.offerRepeatId = setInterval(sendOfferBroadcast, 2000);
+      // Автоматический сброс гудков через 35 секунд, если собеседник не ответил
+      activeCallState.noAnswerTimeoutId = setTimeout(() => {
+        if (activeCallState && activeCallState.isOutgoing && !activeCallState.callStartTime) {
+          endActiveCall(true);
+        }
+      }, 35000);
     } catch (err) {
       alert('Для звонка разрешите доступ к микрофону/камере: ' + (err.message || err));
       await endActiveCall(false);
@@ -4392,6 +4398,9 @@
     }
     if (stateSnapshot && stateSnapshot.offerRepeatId) {
       clearInterval(stateSnapshot.offerRepeatId);
+    }
+    if (stateSnapshot && stateSnapshot.noAnswerTimeoutId) {
+      clearTimeout(stateSnapshot.noAnswerTimeoutId);
     }
     if (rtcPeerConnection) {
       try { rtcPeerConnection.close(); } catch (e) {}
@@ -5273,6 +5282,10 @@
     const savedWallpaper = localStorage.getItem('pulse_wallpaper') || 'aurora';
     document.documentElement.setAttribute('data-accent', savedAccent);
     document.documentElement.setAttribute('data-wallpaper', savedWallpaper);
+    if (document.body) {
+      document.body.setAttribute('data-accent', savedAccent);
+      document.body.setAttribute('data-wallpaper', savedWallpaper);
+    }
     accentBtns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-set-accent') === savedAccent));
     wallpaperBtns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-set-wallpaper') === savedWallpaper));
   }
@@ -6244,7 +6257,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=34').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=35').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

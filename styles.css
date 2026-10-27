@@ -1024,22 +1024,145 @@ input, textarea {
   transform: scale(1.04);
 }
 
-[data-wallpaper="aurora"] .messages-viewport {
+/* Насыщенные обои переписки + живое превью в Настройках (v35) */
+[data-wallpaper="aurora"] .messages-viewport,
+[data-wallpaper="aurora"] .wallpaper-live-preview {
+  background-color: var(--bg-chat) !important;
   background-image:
-    radial-gradient(circle at 15% 20%, var(--accent-soft), transparent 42%),
-    radial-gradient(circle at 85% 78%, rgba(16, 185, 129, 0.08), transparent 45%);
+    radial-gradient(circle at 16% 18%, rgba(99, 102, 241, 0.28), transparent 45%),
+    radial-gradient(circle at 84% 26%, rgba(168, 85, 247, 0.22), transparent 48%),
+    radial-gradient(circle at 78% 82%, rgba(16, 185, 129, 0.20), transparent 46%),
+    radial-gradient(circle at 22% 78%, rgba(14, 165, 233, 0.18), transparent 45%) !important;
+  background-size: 100% 100% !important;
 }
 
-[data-wallpaper="dots"] .messages-viewport {
-  background-image: radial-gradient(rgba(148, 163, 184, 0.16) 1px, transparent 1px);
-  background-size: 20px 20px;
+[data-wallpaper="dots"] .messages-viewport,
+[data-wallpaper="dots"] .wallpaper-live-preview {
+  background-color: #04120c !important;
+  background-image:
+    radial-gradient(circle at 50% 15%, rgba(16, 185, 129, 0.26), transparent 60%),
+    radial-gradient(circle, rgba(16, 185, 129, 0.78) 1.6px, transparent 2.2px),
+    radial-gradient(circle, rgba(52, 211, 153, 0.45) 1.2px, transparent 1.8px),
+    linear-gradient(to right, rgba(16, 185, 129, 0.16) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 185, 129, 0.16) 1px, transparent 1px) !important;
+  background-size: 100% 100%, 24px 24px, 12px 12px, 24px 24px, 24px 24px !important;
+  background-position: 0 0, 0 0, 6px 6px, 0 0, 0 0 !important;
 }
 
-[data-wallpaper="stars"] .messages-viewport {
+[data-wallpaper="stars"] .messages-viewport,
+[data-wallpaper="stars"] .wallpaper-live-preview {
+  background-color: #060719 !important;
   background-image:
-    radial-gradient(circle at 50% 0%, var(--accent-soft), transparent 55%),
-    radial-gradient(rgba(255, 255, 255, 0.12) 1px, transparent 1px);
-  background-size: 100% 100%, 34px 34px;
+    radial-gradient(circle at 20% 20%, rgba(139, 92, 246, 0.30), transparent 48%),
+    radial-gradient(circle at 82% 72%, rgba(14, 165, 233, 0.25), transparent 50%),
+    radial-gradient(circle, rgba(255, 255, 255, 0.92) 1.5px, transparent 2.3px),
+    radial-gradient(circle, rgba(147, 197, 253, 0.85) 1.8px, transparent 2.8px),
+    radial-gradient(circle, rgba(253, 224, 71, 0.78) 1.3px, transparent 2.2px),
+    radial-gradient(circle, rgba(196, 181, 253, 0.65) 1.1px, transparent 1.9px) !important;
+  background-size: 100% 100%, 100% 100%, 54px 54px, 78px 78px, 110px 110px, 36px 36px !important;
+  background-position: 0 0, 0 0, 4px 8px, 28px 42px, 15px 65px, 19px 14px !important;
+}
+
+[data-wallpaper="cyber"] .messages-viewport,
+[data-wallpaper="cyber"] .wallpaper-live-preview {
+  background-color: #0d051a !important;
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(244, 63, 94, 0.28), transparent 55%),
+    radial-gradient(circle at 85% 85%, rgba(6, 182, 212, 0.26), transparent 52%),
+    linear-gradient(to right, rgba(236, 72, 153, 0.20) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(6, 182, 212, 0.20) 1px, transparent 1px),
+    radial-gradient(circle, rgba(34, 211, 238, 0.75) 1.5px, transparent 2.2px) !important;
+  background-size: 100% 100%, 100% 100%, 28px 28px, 28px 28px, 28px 28px !important;
+}
+
+[data-wallpaper="clean"] .messages-viewport,
+[data-wallpaper="clean"] .wallpaper-live-preview {
+  background-color: var(--bg-chat) !important;
+  background-image: none !important;
+}
+
+.wallpaper-live-preview {
+  margin-top: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+  position: relative;
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+.wp-preview-bubble {
+  max-width: 78%;
+  padding: 6px 11px;
+  border-radius: 13px;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.wp-preview-bubble.incoming {
+  align-self: flex-start;
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.wp-preview-bubble.outgoing {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+}
+
+/* Анимация двойного тапа (лайк сердечком ❤️) и панель быстрых ответов (v35) */
+.dbltap-heart-burst {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  font-size: 42px;
+  transform: translate(-50%, -50%) scale(0.2);
+  animation: pulseHeartBurst 0.72s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+  filter: drop-shadow(0 6px 18px rgba(244, 63, 94, 0.55));
+}
+
+@keyframes pulseHeartBurst {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.2) rotate(-12deg); }
+  35% { opacity: 1; transform: translate(-50%, -62%) scale(1.25) rotate(6deg); }
+  70% { opacity: 1; transform: translate(-50%, -78%) scale(1.0) rotate(-3deg); }
+  100% { opacity: 0; transform: translate(-50%, -105%) scale(1.35) rotate(0deg); }
+}
+
+.smart-quick-replies-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 5px 12px;
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--border);
+  scrollbar-width: none;
+}
+.smart-quick-replies-bar::-webkit-scrollbar { display: none; }
+.smart-quick-replies-bar.hidden { display: none !important; }
+
+.smart-reply-chip {
+  flex-shrink: 0;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+.smart-reply-chip:active {
+  transform: scale(0.94);
 }
 
 .poll-card {
