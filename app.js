@@ -4173,18 +4173,29 @@
       const offer = await rtcPeerConnection.createOffer();
       await rtcPeerConnection.setLocalDescription(offer);
 
-      realtimeChannel.send({
-        type: 'broadcast',
-        event: 'call-signal',
-        payload: {
-          type: 'offer',
-          from_id: currentUser.id,
-          to_id: pres.peer.id,
-          room_id: activeRoom.id,
-          is_video: isVideo,
-          sdp: offer
-        }
-      });
+      // Мгновенно будим телефон собеседника через облачный Web Push (Apple APNs / Google FCM), если приложение у него закрыто!
+      dispatchClosedAppWebPushForRoom(
+        activeRoom,
+        isVideo ? '📹 Входящий видеозвонок — нажмите, чтобы ответить!' : '📞 Входящий аудиозвонок — нажмите, чтобы ответить!'
+      );
+
+      const sendOfferBroadcast = () => {
+        if (!activeCallState || !activeCallState.isOutgoing || activeCallState.callStartTime || !realtimeChannel) return;
+        realtimeChannel.send({
+          type: 'broadcast',
+          event: 'call-signal',
+          payload: {
+            type: 'offer',
+            from_id: currentUser.id,
+            to_id: pres.peer.id,
+            room_id: activeRoom.id,
+            is_video: isVideo,
+            sdp: rtcPeerConnection ? rtcPeerConnection.localDescription || offer : offer
+          }
+        }).catch(() => {});
+      };
+      sendOfferBroadcast();
+      activeCallState.offerRepeatId = setInterval(sendOfferBroadcast, 2000);
     } catch (err) {
       alert('Для звонка разрешите доступ к микрофону/камере: ' + (err.message || err));
       await endActiveCall(false);
@@ -4245,7 +4256,12 @@
     const caller = allProfiles.find((p) => p.id === payload.from_id);
 
     if (payload.type === 'offer') {
-      if (activeCallState) return;
+      if (activeCallState) {
+        if (!activeCallState.isOutgoing && activeCallState.peerId === payload.from_id && payload.sdp) {
+          activeCallState.incomingOffer = payload.sdp;
+        }
+        return;
+      }
       triggerHaptic('heavy');
       const isVid = Boolean(payload.is_video);
       await applySpeakerMode(isVid);
@@ -4275,6 +4291,10 @@
         payload.room_id
       );
     } else if (payload.type === 'answer' && rtcPeerConnection) {
+      if (activeCallState && activeCallState.offerRepeatId) {
+        clearInterval(activeCallState.offerRepeatId);
+        activeCallState.offerRepeatId = null;
+      }
       stopCallRingingLoop();
       await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
       callStatusText.textContent = 'Соединение установлено';
@@ -4369,6 +4389,9 @@
 
     if (stateSnapshot && stateSnapshot.timerId) {
       clearInterval(stateSnapshot.timerId);
+    }
+    if (stateSnapshot && stateSnapshot.offerRepeatId) {
+      clearInterval(stateSnapshot.offerRepeatId);
     }
     if (rtcPeerConnection) {
       try { rtcPeerConnection.close(); } catch (e) {}
@@ -6221,7 +6244,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=33').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=34').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
