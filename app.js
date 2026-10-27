@@ -558,9 +558,10 @@
   const VAPID_PRIVATE_JWK = {
     kty: "EC",
     crv: "P-256",
-    x: "SFZyYp7L8yMGImsdF8L4DUYDF0w016j-yndEUZK_7DU",
+    x: "SFZyYp7L8yMGImsLRfD4DUYDF0w016j-yndEUZK_7DU",
     y: "3lD2I63ZA6CA4x5xgT3AyxhCRvDQ69AKiFy5LRiYoJ8",
     d: "_XnW3CDlbmSO-lZV-xEuDwNUEh9TIhzK0ZqMjklinlw",
+    key_ops: ["sign"],
     ext: true
   };
 
@@ -682,7 +683,7 @@
       "raw",
       uaPublicBytes,
       { name: "ECDH", namedCurve: "P-256" },
-      true,
+      false,
       []
     );
     const asKeyPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
@@ -6149,7 +6150,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=30').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=31').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
