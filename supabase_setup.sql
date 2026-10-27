@@ -143,3 +143,31 @@ begin;
   drop publication if exists supabase_realtime;
   create publication supabase_realtime for table public.messages, public.rooms, public.profiles;
 commit;
+
+-- 6. Серверная отправка фоновых Web Push уведомлений (Apple APNs / Google FCM) при закрытом приложении
+create extension if not exists http with schema extensions;
+create extension if not exists pg_net;
+
+create or replace function public.send_web_push(
+  target_url text,
+  auth_header text,
+  body_b64 text default ''
+)
+returns void as $$
+begin
+  perform extensions.http((
+    'POST',
+    target_url,
+    array[
+      extensions.http_header('Authorization', auth_header),
+      extensions.http_header('TTL', '86400'),
+      extensions.http_header('Urgency', 'high'),
+      extensions.http_header('Content-Length', '0')
+    ],
+    'text/plain',
+    ''
+  )::extensions.http_request);
+exception when others then
+  null;
+end;
+$$ language plpgsql security definer;

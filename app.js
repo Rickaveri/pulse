@@ -598,21 +598,22 @@
       filtered.push({ endpoint: subJson.endpoint, keys: subJson.keys });
       const trimmed = filtered.slice(-4);
 
-      const changed = JSON.stringify(existingSubs) !== JSON.stringify(trimmed);
       currentUser.push_subs = trimmed;
-      if (changed) {
-        const packed = packProfileMeta({
-          color: currentUser.color,
-          username: currentUser.username,
-          phone: currentUser.phone,
-          avatar_url: currentUser.avatar_url,
-          bio: currentUser.bio,
-          push_subs: trimmed
-        });
-        await supabaseClient
-          .from("profiles")
-          .update({ avatar_color: packed, last_seen: new Date().toISOString() })
-          .eq("id", currentUser.id);
+      const packed = packProfileMeta({
+        color: currentUser.color,
+        username: currentUser.username,
+        phone: currentUser.phone,
+        avatar_url: currentUser.avatar_url,
+        bio: currentUser.bio,
+        push_subs: trimmed
+      });
+      await supabaseClient
+        .from("profiles")
+        .update({ avatar_color: packed, last_seen: new Date().toISOString() })
+        .eq("id", currentUser.id);
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = "✓ APNs/WebPush токен активен (работает в закрытом режиме)";
+        pushStatusSubtext.style.color = "var(--success)";
       }
     } catch (e) {
       console.warn("WebPush subscribe info:", e);
@@ -712,21 +713,46 @@
         roomId: room.id
       };
 
+      const { data: freshProfs } = await supabaseClient
+        .from("profiles")
+        .select("*")
+        .in("id", targetRecipientIds);
+      const freshList = (freshProfs || []).map(unpackProfile).filter(Boolean);
+
       for (const uid of targetRecipientIds) {
-        const prof = allProfiles.find((p) => p.id === uid);
+        const prof = freshList.find((p) => p.id === uid) || allProfiles.find((p) => p.id === uid);
         const subs = prof && Array.isArray(prof.push_subs) ? prof.push_subs : [];
         for (const sub of subs) {
           if (!sub || !sub.endpoint || !sub.keys) continue;
           try {
             const pkt = await buildWebPushEncryptedPacket(sub, pushPayload);
-            // 1) Вызов серверной функции Supabase pg_net (если активирована в SQL)
+            // 1) Вызов серверной функции Supabase (работает 24/7 напрямую из облака Supabase в Apple APNs)
             supabaseClient.rpc("send_web_push", {
               target_url: pkt.endpoint,
               auth_header: pkt.authHeader,
-              body_b64: uint8ToBase64(pkt.bodyBytes)
+              body_b64: ""
             }).catch(() => {});
 
-            // 2) Отправка через HTTPS CORS-релей напрямую из браузера отправителя
+            // 2) Вещание сигнала будильника через Realtime-канал для активных релеев
+            if (realtimeChannel) {
+              realtimeChannel.send({
+                type: "broadcast",
+                event: "apns-wake",
+                payload: { endpoint: pkt.endpoint, authHeader: pkt.authHeader }
+              }).catch(() => {});
+            }
+
+            // 3) Параллельная отправка через публичные HTTPS-релеи (пустой VAPID-будильник + зашифрованный пакет)
+            const wakeHeaders = {
+              "Authorization": pkt.authHeader,
+              "TTL": "86400",
+              "Urgency": "high",
+              "Content-Length": "0"
+            };
+            fetch(`https://thingproxy.freeboard.io/fetch/${pkt.endpoint}`, {
+              method: "POST",
+              headers: wakeHeaders
+            }).catch(() => {});
             fetch(`https://corsproxy.io/?${encodeURIComponent(pkt.endpoint)}`, {
               method: "POST",
               headers: {
@@ -5991,7 +6017,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=25').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=26').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

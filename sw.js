@@ -1,11 +1,14 @@
-const CACHE_NAME = 'pulse-pwa-v25';
+const CACHE_NAME = 'pulse-pwa-v26';
+const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
+
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=25',
-  './config.js?v=25',
-  './app.js?v=25',
-  './enhancements.js?v=25',
+  './styles.css?v=26',
+  './config.js?v=26',
+  './app.js?v=26',
+  './enhancements.js?v=26',
   './manifest.json'
 ];
 
@@ -53,29 +56,71 @@ self.addEventListener('message', (event) => {
   }
 });
 
-// Системный обработчик APNs / FCM Web Push, который будит телефон даже при полностью закрытом приложении!
+// Обработчик системного будильника Apple APNs / Google FCM при ПОЛНОСТЬЮ ЗАКРЫТОМ приложении
 self.addEventListener('push', (event) => {
-  let payload = { title: 'Новое сообщение в Pulse', body: 'Откройте мессенджер, чтобы прочитать', roomId: null };
-  try {
-    if (event.data) {
-      const txt = event.data.text();
-      try {
-        payload = Object.assign(payload, JSON.parse(txt));
-      } catch (e) {
-        if (txt) payload.body = txt;
-      }
-    }
-  } catch (e) {}
+  const handlePushWake = async () => {
+    let title = 'Pulse';
+    let body = 'У вас новое сообщение 💬';
+    let roomId = null;
+    let gotPayload = false;
 
-  event.waitUntil(
-    self.registration.showNotification(payload.title || 'Pulse', {
-      body: payload.body || 'Новое сообщение',
+    if (event.data) {
+      try {
+        const txt = event.data.text();
+        if (txt) {
+          try {
+            const parsed = JSON.parse(txt);
+            if (parsed && (parsed.title || parsed.body)) {
+              title = parsed.title || title;
+              body = parsed.body || body;
+              roomId = parsed.roomId || null;
+              gotPayload = true;
+            }
+          } catch (e) {
+            body = txt;
+            gotPayload = true;
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Если пришёл пустой сигнал-будильник от APNs, подтягиваем имя отправителя напрямую из Supabase
+    if (!gotPayload) {
+      try {
+        const res = await fetch(
+          `${SUPABASE_URL}/rest/v1/messages?select=sender_name,media_type,room_id&order=created_at.desc&limit=1`,
+          {
+            headers: {
+              apikey: SUPABASE_KEY,
+              Authorization: `Bearer ${SUPABASE_KEY}`
+            }
+          }
+        );
+        if (res.ok) {
+          const rows = await res.json();
+          if (rows && rows[0]) {
+            title = rows[0].sender_name || 'Новое сообщение';
+            roomId = rows[0].room_id || null;
+            body = rows[0].media_type === 'image'
+              ? '📷 Прислал(а) фотографию'
+              : rows[0].media_type === 'audio'
+              ? '🎤 Голосовое сообщение'
+              : '💬 Прислал(а) вам новое сообщение';
+          }
+        }
+      } catch (e) {}
+    }
+
+    await self.registration.showNotification(title, {
+      body,
       tag: `pulse-push-${Date.now()}`,
       renotify: true,
       vibrate: [220, 100, 220],
-      data: { roomId: payload.roomId || null }
-    })
-  );
+      data: { roomId }
+    });
+  };
+
+  event.waitUntil(handlePushWake());
 });
 
 self.addEventListener('notificationclick', (event) => {
