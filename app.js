@@ -920,7 +920,6 @@
         pushStatusSubtext.textContent = '📲 Сразу сверните приложение: через 6 сек облако пришлёт пуш!';
         pushStatusSubtext.style.color = 'var(--success)';
       }
-      showToast('Пуш отправлен в облако! Сверните приложение — придёт через 6 сек');
 
       const workerUrl = (window.MESSENGER_CONFIG && window.MESSENGER_CONFIG.PUSH_WORKER_URL) || "https://morning-grass-d126.rikaverisestakov.workers.dev/";
       let res = await fetch(workerUrl, {
@@ -6222,7 +6221,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=32').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=33').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
