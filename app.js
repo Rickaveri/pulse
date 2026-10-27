@@ -1017,7 +1017,7 @@
       .select('*')
       .in('room_id', roomIds)
       .order('created_at', { ascending: false })
-      .limit(900);
+      .limit(250);
     const data = descData ? [...descData].reverse() : null;
 
     if (error || !data) return;
@@ -1668,22 +1668,33 @@
       (msgs || []).forEach((m) => { if (m && m.id) notifiedMsgIds.add(m.id); });
     });
 
+    let lastPolledIso = new Date(Date.now() - 15000).toISOString();
+    let pollTick = 0;
     setInterval(async () => {
       if (!currentUser || !supabaseClient) return;
       try {
+        pollTick += 1;
         const prevRoomCount = myRooms.length;
-        await refreshDirectoryAndRooms();
+        // Обновляем список комнат раз в 3 цикла (~9 сек), а новые сообщения проверяем легковесным дельта-запросом
+        if (pollTick % 3 === 0 || myRooms.length === 0) {
+          await refreshDirectoryAndRooms();
+        }
         if (myRooms.length === 0) return;
         const rIds = myRooms.map((r) => r.id);
         const { data: recent } = await supabaseClient
           .from('messages')
           .select('*')
           .in('room_id', rIds)
-          .order('created_at', { ascending: false })
-          .limit(25);
-        if (!recent || !recent.length) return;
-        let hasNew = myRooms.length !== prevRoomCount;
-        for (const m of [...recent].reverse()) {
+          .gt('created_at', lastPolledIso)
+          .order('created_at', { ascending: true })
+          .limit(20);
+        if (!recent || !recent.length) {
+          if (myRooms.length !== prevRoomCount) await preloadAllRoomsMessages();
+          return;
+        }
+        lastPolledIso = recent[recent.length - 1].created_at || new Date().toISOString();
+        let hasNew = false;
+        for (const m of recent) {
           if (m.id && !notifiedMsgIds.has(m.id)) {
             hasNew = true;
             if (m.sender_id !== currentUser.id) {
@@ -1694,11 +1705,11 @@
           }
         }
         if (hasNew) {
-          await preloadAllRoomsMessages();
           if (activeRoom) await loadMessages(activeRoom.id);
+          await preloadAllRoomsMessages();
         }
       } catch (e) {}
-    }, 2800);
+    }, 3200);
 
     setInterval(async () => {
       if (!currentUser || !supabaseClient) return;
@@ -2428,7 +2439,7 @@
       .select('*')
       .eq('room_id', roomId)
       .order('created_at', { ascending: false })
-      .limit(350);
+      .limit(150);
     const data = descMsgs ? [...descMsgs].reverse() : null;
 
     if (error) return;
@@ -4297,7 +4308,7 @@
               .select('*')
               .eq('room_id', incoming.room_id)
               .order('created_at', { ascending: true })
-              .limit(350);
+              .limit(150);
             if (data) {
               roomMessagesCache.set(incoming.room_id, data);
               const rm = myRooms.find((r) => r.id === incoming.room_id);
@@ -6017,7 +6028,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=26').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=27').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
