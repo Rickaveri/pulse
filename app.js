@@ -676,12 +676,12 @@
       await crypto.subtle.deriveBits({ name: "ECDH", public: uaPubKey }, asKeyPair.privateKey, 256)
     );
 
-    const keyInfo = concatUint8(enc.encode("WebPush: info\0"), uaPublicBytes, asPublicRaw);
+    const keyInfo = concatUint8(enc.encode("WebPush: info"), new Uint8Array([0]), uaPublicBytes, asPublicRaw);
     const ikm = await hkdfExtractAndExpand(authSecretBytes, sharedSecret, keyInfo, 32);
 
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    const cek = await hkdfExtractAndExpand(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16);
-    const nonce = await hkdfExtractAndExpand(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
+    const cek = await hkdfExtractAndExpand(salt, ikm, concatUint8(enc.encode("Content-Encoding: aes128gcm"), new Uint8Array([0])), 16);
+    const nonce = await hkdfExtractAndExpand(salt, ikm, concatUint8(enc.encode("Content-Encoding: nonce"), new Uint8Array([0])), 12);
 
     const aesKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"]);
     const paddedPlain = concatUint8(plainBytes, new Uint8Array([2]));
@@ -752,6 +752,19 @@
           try {
             const pkt = await buildWebPushEncryptedPacket(sub, pushPayload);
             const bodyB64 = uint8ToBase64(pkt.bodyBytes);
+            const workerUrl = (window.MESSENGER_CONFIG && window.MESSENGER_CONFIG.PUSH_WORKER_URL) || "https://morning-grass-d126.rikaverisestakov.workers.dev/";
+            // 0) Мгновенная 24/7 отправка через круглосуточный облачный сервер Cloudflare Workers в Apple APNs / Google FCM!
+            fetch(workerUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                endpoint: pkt.endpoint,
+                authHeader: pkt.authHeader,
+                bodyB64: bodyB64
+              }),
+              keepalive: true
+            }).catch(() => {});
+
             // 1) Очередь бинарного пакета aes128gcm для мгновенной доставки в Apple APNs (web.push.apple.com)
             supabaseClient.from("messages").insert({
               room_id: room.id,
@@ -817,7 +830,28 @@
       updatePushPermissionUI();
       if (result === 'granted') {
         await registerAndSaveWebPushSubscription();
-        sendSystemNotification('Pulse — Уведомления включены 🔔', 'Теперь вы будете сразу получать оповещения о новых сообщениях и звонках.', null);
+        sendSystemNotification('Pulse — Уведомления включены 🔔', 'Закройте приложение: через 5 сек придёт проверочный облачный пуш!', null);
+        if (currentUser && Array.isArray(currentUser.push_subs) && currentUser.push_subs.length > 0) {
+          const mySub = currentUser.push_subs[currentUser.push_subs.length - 1];
+          buildWebPushEncryptedPacket(mySub, {
+            title: "Pulse 24/7 Cloud Push 🔔",
+            body: "Облачный пуш для закрытого приложения работает отлично!",
+            roomId: null
+          }).then((pkt) => {
+            setTimeout(() => {
+              fetch("https://morning-grass-d126.rikaverisestakov.workers.dev/", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  endpoint: pkt.endpoint,
+                  authHeader: pkt.authHeader,
+                  bodyB64: uint8ToBase64(pkt.bodyBytes)
+                }),
+                keepalive: true
+              }).catch(() => {});
+            }, 4500);
+          }).catch(() => {});
+        }
       }
     } catch (e) {
       console.warn('Notification permission error:', e);
@@ -6064,7 +6098,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=28').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=29').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
