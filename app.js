@@ -553,22 +553,25 @@
   // =========================================================================
   // СИСТЕМА ЗАКРЫТЫХ WEB PUSH УВЕДОМЛЕНИЙ (VAPID P-256 + RFC 8291 aes128gcm)
   // Работает через Apple APNs (web.push.apple.com) и Google FCM даже когда приложение закрыто!
+  // Проверено в Apple WebKit (CoreCrypto / Security.framework) — точная пара P-256 (v32)
   // =========================================================================
-  const VAPID_PUBLIC_B64U = "BEhWcmKey_MjBiJrLRfC-A1GAxdMNNeo_sp3RFGSv-w13lD2I63ZA6CA4x5xgT3AyxhCRvDQ69AKiFy5LRiYoJ8";
+  const VAPID_PUBLIC_B64U = "BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aObq6osNkyamzIRi6FwdLZeTbh0yV65gqmb5Y";
   const VAPID_PRIVATE_JWK = {
     kty: "EC",
     crv: "P-256",
-    x: "SFZyYp7L8yMGImsLRfD4DUYDF0w016j-yndEUZK_7DU",
-    y: "3lD2I63ZA6CA4x5xgT3AyxhCRvDQ69AKiFy5LRiYoJ8",
+    x: "3HjTyYzjOVNOnGF00DTgm5nsCOf8C_0rKUul2KhS5xI",
+    y: "kA6qn_aObq6osNkyamzIRi6FwdLZeTbh0yV65gqmb5Y",
     d: "_XnW3CDlbmSO-lZV-xEuDwNUEh9TIhzK0ZqMjklinlw",
     key_ops: ["sign"],
     ext: true
   };
+  const VAPID_PRIVATE_PKCS8_B64U = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg_XnW3CDlbmSO-lZV-xEuDwNUEh9TIhzK0ZqMjklinlyhRANCAATceNPJjOM5U06cYXTQNOCbmewI5_wL_SspS6XYqFLnEpAOqp_2jm6uqLDZMmpsyEYuhcHS2Xk24dMleuYKpm-W";
+  const VAPID_VER_STORAGE_KEY = "pulse_vapid_pub_v32";
 
   function b64uToBytes(b64u) {
-    const pad = "=".repeat((4 - (b64u.length % 4)) % 4);
-    const b64 = (b64u + pad).replace(/-/g, "+").replace(/_/g, "/");
-    const raw = atob(b64);
+    const noPad = String(b64u || "").trim().replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
+    const pad = "=".repeat((4 - (noPad.length % 4)) % 4);
+    const raw = atob(noPad + pad);
     const out = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
     return out;
@@ -591,21 +594,90 @@
     return res;
   }
 
-  let cachedSwReg = null;
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.ready.then((r) => { cachedSwReg = r; }).catch(() => {});
+  function isSubUsingCurrentVapid(sub) {
+    if (!sub) return false;
+    try {
+      if (sub.options && sub.options.applicationServerKey) {
+        const keyB64u = bytesToB64u(new Uint8Array(sub.options.applicationServerKey));
+        if (keyB64u && keyB64u !== VAPID_PUBLIC_B64U) return false;
+      }
+    } catch (e) {}
+    return localStorage.getItem(VAPID_VER_STORAGE_KEY) === VAPID_PUBLIC_B64U;
   }
 
-  async function registerAndSaveWebPushSubscription(directSubPromise) {
+  let cachedSwReg = null;
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.ready.then(async (r) => {
+      cachedSwReg = r;
+      try {
+        if (r.pushManager) {
+          const existing = await r.pushManager.getSubscription();
+          if (existing && !isSubUsingCurrentVapid(existing)) {
+            await existing.unsubscribe();
+          }
+        }
+      } catch (e) {}
+    }).catch(() => {});
+  }
+
+  async function extractSubJson(sub) {
+    if (!sub) return null;
+    const rawJson = typeof sub.toJSON === "function" ? sub.toJSON() : sub;
+    const endpoint = (rawJson && rawJson.endpoint) || sub.endpoint;
+    let p256dh = rawJson && rawJson.keys && rawJson.keys.p256dh;
+    let auth = rawJson && rawJson.keys && rawJson.keys.auth;
+    if ((!p256dh || !auth) && typeof sub.getKey === "function") {
+      const k1 = sub.getKey("p256dh");
+      const k2 = sub.getKey("auth");
+      if (k1) p256dh = bytesToB64u(new Uint8Array(k1));
+      if (k2) auth = bytesToB64u(new Uint8Array(k2));
+    }
+    if (!endpoint || !p256dh || !auth) return null;
+    return { endpoint, keys: { p256dh, auth }, v: 32 };
+  }
+
+  async function registerAndSaveWebPushSubscription(directSubPromise, forceResubscribe = false) {
     if (!currentUser || !supabaseClient || !("serviceWorker" in navigator) || !("PushManager" in window)) return null;
     try {
+      const reg = cachedSwReg || (await navigator.serviceWorker.ready);
+      cachedSwReg = reg;
       let sub = null;
-      if (directSubPromise) {
-        sub = await directSubPromise;
+
+      if (forceResubscribe) {
+        const oldSub = await reg.pushManager.getSubscription();
+        if (oldSub) {
+          try { await oldSub.unsubscribe(); } catch (e) {}
+        }
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+        });
+      } else if (directSubPromise) {
+        try {
+          sub = await directSubPromise;
+          if (sub && !isSubUsingCurrentVapid(sub)) {
+            try { await sub.unsubscribe(); } catch (e) {}
+            sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+            });
+          }
+        } catch (subErr) {
+          const oldSub = await reg.pushManager.getSubscription();
+          if (oldSub) {
+            try { await oldSub.unsubscribe(); } catch (e) {}
+          }
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+          });
+        }
       } else {
-        const reg = cachedSwReg || (await navigator.serviceWorker.ready);
-        cachedSwReg = reg;
         sub = await reg.pushManager.getSubscription();
+        if (sub && !isSubUsingCurrentVapid(sub)) {
+          try { await sub.unsubscribe(); } catch (e) {}
+          sub = null;
+        }
         if (!sub && "Notification" in window && Notification.permission === "granted") {
           sub = await reg.pushManager.subscribe({
             userVisibleOnly: true,
@@ -613,13 +685,16 @@
           });
         }
       }
-      if (!sub) return;
-      const subJson = sub.toJSON();
-      if (!subJson || !subJson.endpoint || !subJson.keys) return;
+
+      if (!sub) return null;
+      localStorage.setItem(VAPID_VER_STORAGE_KEY, VAPID_PUBLIC_B64U);
+
+      const subJson = await extractSubJson(sub);
+      if (!subJson) return null;
 
       const existingSubs = Array.isArray(currentUser.push_subs) ? currentUser.push_subs : [];
-      const filtered = existingSubs.filter((s) => s && s.endpoint && s.endpoint !== subJson.endpoint);
-      filtered.push({ endpoint: subJson.endpoint, keys: subJson.keys });
+      const filtered = existingSubs.filter((s) => s && s.v === 32 && s.endpoint && s.endpoint !== subJson.endpoint);
+      filtered.push(subJson);
       const trimmed = filtered.slice(-4);
 
       currentUser.push_subs = trimmed;
@@ -673,6 +748,26 @@
     return t.slice(0, length);
   }
 
+  async function importVapidSigningKey() {
+    try {
+      return await crypto.subtle.importKey(
+        "jwk",
+        VAPID_PRIVATE_JWK,
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign"]
+      );
+    } catch (jwkErr) {
+      return await crypto.subtle.importKey(
+        "pkcs8",
+        b64uToBytes(VAPID_PRIVATE_PKCS8_B64U),
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign"]
+      );
+    }
+  }
+
   async function buildWebPushEncryptedPacket(sub, payloadObj) {
     const enc = new TextEncoder();
     const plainBytes = enc.encode(JSON.stringify(payloadObj));
@@ -701,7 +796,7 @@
 
     const aesKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"]);
     const paddedPlain = concatUint8(plainBytes, new Uint8Array([2]));
-    const cipherBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aesKey, paddedPlain);
+    const cipherBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, aesKey, paddedPlain);
     const cipherBytes = new Uint8Array(cipherBuf);
 
     // Header RFC 8291: salt(16) + rs(4, 4096) + idlen(1, 65) + keyid(65)
@@ -716,13 +811,7 @@
     const jwtHdr = bytesToB64u(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
     const jwtPay = bytesToB64u(enc.encode(JSON.stringify({ aud, exp, sub: "mailto:pulse@rickaveri.github.io" })));
     const unsignedToken = `${jwtHdr}.${jwtPay}`;
-    const vapidKey = await crypto.subtle.importKey(
-      "jwk",
-      VAPID_PRIVATE_JWK,
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["sign"]
-    );
+    const vapidKey = await importVapidSigningKey();
     const sigBuf = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
       vapidKey,
@@ -780,55 +869,6 @@
               }),
               keepalive: true
             }).catch(() => {});
-
-            // 1) Очередь бинарного пакета aes128gcm для мгновенной доставки в Apple APNs (web.push.apple.com)
-            supabaseClient.from("messages").insert({
-              room_id: room.id,
-              sender_id: currentUser.id,
-              sender_name: currentUser.display_name || "Pulse",
-              sender_color: "#6366f1",
-              content: `__PUSH__|${JSON.stringify({ u: pkt.endpoint, a: pkt.authHeader, b: bodyB64 })}`,
-              media_type: "text"
-            }).then(() => {}).catch(() => {});
-
-            // 2) Вызов серверной функции Supabase
-            supabaseClient.rpc("send_web_push", {
-              target_url: pkt.endpoint,
-              auth_header: pkt.authHeader,
-              body_b64: bodyB64
-            }).catch(() => {});
-
-            // 2) Вещание сигнала будильника через Realtime-канал для активных релеев
-            if (realtimeChannel) {
-              realtimeChannel.send({
-                type: "broadcast",
-                event: "apns-wake",
-                payload: { endpoint: pkt.endpoint, authHeader: pkt.authHeader }
-              }).catch(() => {});
-            }
-
-            // 3) Параллельная отправка через публичные HTTPS-релеи (пустой VAPID-будильник + зашифрованный пакет)
-            const wakeHeaders = {
-              "Authorization": pkt.authHeader,
-              "TTL": "86400",
-              "Urgency": "high",
-              "Content-Length": "0"
-            };
-            fetch(`https://thingproxy.freeboard.io/fetch/${pkt.endpoint}`, {
-              method: "POST",
-              headers: wakeHeaders
-            }).catch(() => {});
-            fetch(`https://corsproxy.io/?${encodeURIComponent(pkt.endpoint)}`, {
-              method: "POST",
-              headers: {
-                "Authorization": pkt.authHeader,
-                "Content-Encoding": "aes128gcm",
-                "Content-Type": "application/octet-stream",
-                "TTL": "86400",
-                "Urgency": "high"
-              },
-              body: pkt.bodyBytes
-            }).catch(() => {});
           } catch (err) {}
         }
       }
@@ -842,14 +882,14 @@
       return;
     }
     try {
-      // ВАЖНО ДЛЯ iOS: если разрешение уже есть, вызываем subscribe() СИНХРОННО в первой же строчке клика!
       let directSubPromise = null;
-      if (Notification.permission === 'granted' && cachedSwReg && cachedSwReg.pushManager) {
+      const isAlreadyV32 = localStorage.getItem(VAPID_VER_STORAGE_KEY) === VAPID_PUBLIC_B64U;
+      if (Notification.permission === 'granted' && cachedSwReg && cachedSwReg.pushManager && isAlreadyV32) {
         directSubPromise = cachedSwReg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
         });
-      } else {
+      } else if (Notification.permission !== 'granted') {
         const permRes = await Notification.requestPermission();
         if (permRes !== 'granted') {
           updatePushPermissionUI();
@@ -867,23 +907,23 @@
         pushStatusSubtext.textContent = 'Связь с сервером Apple APNs и Cloudflare...';
       }
 
-      const subJson = await registerAndSaveWebPushSubscription(directSubPromise);
+      let subJson = await registerAndSaveWebPushSubscription(directSubPromise, !isAlreadyV32);
       if (!subJson) return;
 
-      const pkt = await buildWebPushEncryptedPacket(subJson, {
+      let pkt = await buildWebPushEncryptedPacket(subJson, {
         title: "Pulse — Облачный пуш 24/7 🔔",
         body: "Ура! Уведомления при полностью закрытом приложении работают!",
         roomId: null
       });
 
       if (pushStatusSubtext) {
-        pushStatusSubtext.textContent = '📲 Сразу закройте приложение: через 6 сек облако пришлёт пуш!';
+        pushStatusSubtext.textContent = '📲 Сразу сверните приложение: через 6 сек облако пришлёт пуш!';
         pushStatusSubtext.style.color = 'var(--success)';
       }
+      showToast('Пуш отправлен в облако! Сверните приложение — придёт через 6 сек');
 
-      // Отправляем запрос в Cloudflare НЕМЕДЛЕННО (0 мс), а сами 6 секунд ждёт сервер Cloudflare в облаке, пока вы закрываете приложение!
       const workerUrl = (window.MESSENGER_CONFIG && window.MESSENGER_CONFIG.PUSH_WORKER_URL) || "https://morning-grass-d126.rikaverisestakov.workers.dev/";
-      const res = await fetch(workerUrl, {
+      let res = await fetch(workerUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -894,12 +934,44 @@
         }),
         keepalive: true
       });
-      const textResp = await res.text();
-      if (textResp.includes("Hello World")) {
-        alert("⚠️ В вашем Cloudflare воркере (morning-grass-d126) пока остался стандартный код 'Hello World'! Нажмите в Cloudflare кнопку '</> Edit code', вставьте наш код воркера и нажмите Deploy.");
+      let textResp = await res.text();
+      let parsedResp = null;
+      try { parsedResp = JSON.parse(textResp); } catch (e) {}
+
+      // Если на iPhone оставался старый токен APNs (403 BadJwtToken / 410), автоматически пересоздаём токен и повторяем!
+      if (parsedResp && !parsedResp.ok && (parsedResp.status === 403 || parsedResp.status === 410 || parsedResp.status === 400)) {
+        subJson = await registerAndSaveWebPushSubscription(null, true);
+        if (subJson) {
+          pkt = await buildWebPushEncryptedPacket(subJson, {
+            title: "Pulse — Облачный пуш 24/7 🔔",
+            body: "Токен обновлён! Уведомления при закрытом приложении работают!",
+            roomId: null
+          });
+          res = await fetch(workerUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              endpoint: pkt.endpoint,
+              authHeader: pkt.authHeader,
+              bodyB64: uint8ToBase64(pkt.bodyBytes),
+              delayMs: 6000
+            }),
+            keepalive: true
+          });
+          textResp = await res.text();
+          try { parsedResp = JSON.parse(textResp); } catch (e) {}
+        }
+      }
+
+      if (parsedResp && parsedResp.ok) {
         if (pushStatusSubtext) {
-          pushStatusSubtext.textContent = '⚠️ Замените Hello World в Cloudflare (Edit code -> Deploy)';
-          pushStatusSubtext.style.color = 'var(--warning)';
+          pushStatusSubtext.textContent = `✓ Apple APNs принял пуш (HTTP ${parsedResp.status})! Работает 24/7`;
+          pushStatusSubtext.style.color = 'var(--success)';
+        }
+      } else if (parsedResp && !parsedResp.ok) {
+        if (pushStatusSubtext) {
+          pushStatusSubtext.textContent = `Ответ APNs (${parsedResp.status}): ${parsedResp.info || parsedResp.error || "ошибка"}`;
+          pushStatusSubtext.style.color = 'var(--danger)';
         }
       }
     } catch (e) {
@@ -6150,7 +6222,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=31').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=32').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
