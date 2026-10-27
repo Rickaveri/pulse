@@ -1,11 +1,11 @@
-const CACHE_NAME = 'pulse-pwa-v24';
+const CACHE_NAME = 'pulse-pwa-v25';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=24',
-  './config.js?v=24',
-  './app.js?v=24',
-  './enhancements.js?v=24',
+  './styles.css?v=25',
+  './config.js?v=25',
+  './app.js?v=25',
+  './enhancements.js?v=25',
   './manifest.json'
 ];
 
@@ -38,14 +38,13 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Мгновенный показ системного Push-уведомления от фонового потока или Web Push
 self.addEventListener('message', (event) => {
   const data = event.data;
   if (data && data.type === 'SHOW_NOTIFICATION') {
     event.waitUntil(
       self.registration.showNotification(data.title || 'Новое сообщение в Pulse', {
         body: data.body || 'Откройте приложение, чтобы прочитать',
-        tag: data.roomId ? `pulse-room-${data.roomId}-${Date.now()}` : `pulse-${Date.now()}`,
+        tag: `pulse-msg-${Date.now()}`,
         renotify: true,
         vibrate: [200, 100, 200],
         data: { roomId: data.roomId || null }
@@ -54,17 +53,26 @@ self.addEventListener('message', (event) => {
   }
 });
 
+// Системный обработчик APNs / FCM Web Push, который будит телефон даже при полностью закрытом приложении!
 self.addEventListener('push', (event) => {
-  let payload = { title: 'Pulse', body: 'Новое сообщение', roomId: null };
+  let payload = { title: 'Новое сообщение в Pulse', body: 'Откройте мессенджер, чтобы прочитать', roomId: null };
   try {
-    if (event.data) payload = Object.assign(payload, event.data.json());
+    if (event.data) {
+      const txt = event.data.text();
+      try {
+        payload = Object.assign(payload, JSON.parse(txt));
+      } catch (e) {
+        if (txt) payload.body = txt;
+      }
+    }
   } catch (e) {}
+
   event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.body,
+    self.registration.showNotification(payload.title || 'Pulse', {
+      body: payload.body || 'Новое сообщение',
       tag: `pulse-push-${Date.now()}`,
       renotify: true,
-      vibrate: [200, 100, 200],
+      vibrate: [220, 100, 220],
       data: { roomId: payload.roomId || null }
     })
   );

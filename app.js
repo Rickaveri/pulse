@@ -336,6 +336,14 @@
     if (created_at) payload.created_at = created_at;
 
     const res = await supabaseClient.from('messages').insert(payload).select();
+    if (res && res.data && res.data[0]) {
+      const targetRm = myRooms.find((r) => r.id === room_id) || activeRoom;
+      if (targetRm && !(content || "").startsWith("__REACT__") && !(content || "").startsWith("__PIN__")) {
+        extractMessagePreviewText(res.data[0], targetRm).then((prev) => {
+          dispatchClosedAppWebPushForRoom(targetRm, prev);
+        }).catch(() => {});
+      }
+    }
     if (res && res.data && res.data[0] && realtimeChannel) {
       try {
         realtimeChannel.send({
@@ -528,6 +536,214 @@
     }
   }
 
+
+  // =========================================================================
+  // СИСТЕМА ЗАКРЫТЫХ WEB PUSH УВЕДОМЛЕНИЙ (VAPID P-256 + RFC 8291 aes128gcm)
+  // Работает через Apple APNs (web.push.apple.com) и Google FCM даже когда приложение закрыто!
+  // =========================================================================
+  const VAPID_PUBLIC_B64U = "BEhWcmKey_MjBiJrLRfC-A1GAxdMNNeo_sp3RFGSv-w13lD2I63ZA6CA4x5xgT3AyxhCRvDQ69AKiFy5LRiYoJ8";
+  const VAPID_PRIVATE_JWK = {
+    kty: "EC",
+    crv: "P-256",
+    x: "SFZyYp7L8yMGImsdF8L4DUYDF0w016j-yndEUZK_7DU",
+    y: "3lD2I63ZA6CA4x5xgT3AyxhCRvDQ69AKiFy5LRiYoJ8",
+    d: "_XnW3CDlbmSO-lZV-xEuDwNUEh9TIhzK0ZqMjklinlw",
+    ext: true
+  };
+
+  function b64uToBytes(b64u) {
+    const pad = "=".repeat((4 - (b64u.length % 4)) % 4);
+    const b64 = (b64u + pad).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(b64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  function bytesToB64u(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function concatUint8(...arrays) {
+    const total = arrays.reduce((acc, a) => acc + a.length, 0);
+    const res = new Uint8Array(total);
+    let off = 0;
+    for (const a of arrays) {
+      res.set(a, off);
+      off += a.length;
+    }
+    return res;
+  }
+
+  async function registerAndSaveWebPushSubscription() {
+    if (!currentUser || !supabaseClient || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+        });
+      }
+      if (!sub) return;
+      const subJson = sub.toJSON();
+      if (!subJson || !subJson.endpoint || !subJson.keys) return;
+
+      const existingSubs = Array.isArray(currentUser.push_subs) ? currentUser.push_subs : [];
+      const filtered = existingSubs.filter((s) => s && s.endpoint && s.endpoint !== subJson.endpoint);
+      filtered.push({ endpoint: subJson.endpoint, keys: subJson.keys });
+      const trimmed = filtered.slice(-4);
+
+      const changed = JSON.stringify(existingSubs) !== JSON.stringify(trimmed);
+      currentUser.push_subs = trimmed;
+      if (changed) {
+        const packed = packProfileMeta({
+          color: currentUser.color,
+          username: currentUser.username,
+          phone: currentUser.phone,
+          avatar_url: currentUser.avatar_url,
+          bio: currentUser.bio,
+          push_subs: trimmed
+        });
+        await supabaseClient
+          .from("profiles")
+          .update({ avatar_color: packed, last_seen: new Date().toISOString() })
+          .eq("id", currentUser.id);
+      }
+    } catch (e) {
+      console.warn("WebPush subscribe info:", e);
+    }
+  }
+
+  async function hmacSha256(keyBytes, dataBytes) {
+    const k = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = await crypto.subtle.sign("HMAC", k, dataBytes);
+    return new Uint8Array(sig);
+  }
+
+  async function hkdfExtractAndExpand(salt, ikm, infoBytes, length) {
+    const prk = await hmacSha256(salt, ikm);
+    const t = await hmacSha256(prk, concatUint8(infoBytes, new Uint8Array([1])));
+    return t.slice(0, length);
+  }
+
+  async function buildWebPushEncryptedPacket(sub, payloadObj) {
+    const enc = new TextEncoder();
+    const plainBytes = enc.encode(JSON.stringify(payloadObj));
+    const uaPublicBytes = b64uToBytes(sub.keys.p256dh);
+    const authSecretBytes = b64uToBytes(sub.keys.auth);
+
+    const uaPubKey = await crypto.subtle.importKey(
+      "raw",
+      uaPublicBytes,
+      { name: "ECDH", namedCurve: "P-256" },
+      true,
+      []
+    );
+    const asKeyPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+    const asPublicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", asKeyPair.publicKey));
+    const sharedSecret = new Uint8Array(
+      await crypto.subtle.deriveBits({ name: "ECDH", public: uaPubKey }, asKeyPair.privateKey, 256)
+    );
+
+    const keyInfo = concatUint8(enc.encode("WebPush: info\0"), uaPublicBytes, asPublicRaw);
+    const ikm = await hkdfExtractAndExpand(authSecretBytes, sharedSecret, keyInfo, 32);
+
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const cek = await hkdfExtractAndExpand(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16);
+    const nonce = await hkdfExtractAndExpand(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
+
+    const aesKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"]);
+    const paddedPlain = concatUint8(plainBytes, new Uint8Array([2]));
+    const cipherBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aesKey, paddedPlain);
+    const cipherBytes = new Uint8Array(cipherBuf);
+
+    // Header RFC 8291: salt(16) + rs(4, 4096) + idlen(1, 65) + keyid(65)
+    const rsBytes = new Uint8Array([0x00, 0x00, 0x10, 0x00]);
+    const idLenBytes = new Uint8Array([65]);
+    const bodyBytes = concatUint8(salt, rsBytes, idLenBytes, asPublicRaw, cipherBytes);
+
+    // VAPID JWT (RFC 8292)
+    const u = new URL(sub.endpoint);
+    const aud = `${u.protocol}//${u.host}`;
+    const exp = Math.floor(Date.now() / 1000) + 43200;
+    const jwtHdr = bytesToB64u(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+    const jwtPay = bytesToB64u(enc.encode(JSON.stringify({ aud, exp, sub: "mailto:pulse@rickaveri.github.io" })));
+    const unsignedToken = `${jwtHdr}.${jwtPay}`;
+    const vapidKey = await crypto.subtle.importKey(
+      "jwk",
+      VAPID_PRIVATE_JWK,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["sign"]
+    );
+    const sigBuf = await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      vapidKey,
+      enc.encode(unsignedToken)
+    );
+    const jwt = `${unsignedToken}.${bytesToB64u(new Uint8Array(sigBuf))}`;
+    const authHeader = `vapid t=${jwt}, k=${VAPID_PUBLIC_B64U}`;
+
+    return { endpoint: sub.endpoint, authHeader, bodyBytes };
+  }
+
+  async function dispatchClosedAppWebPushForRoom(room, plainPreview) {
+    if (!room || !currentUser || !supabaseClient) return;
+    try {
+      const dk = room.direct_key || "";
+      if (dk.startsWith("saved_")) return;
+      let targetRecipientIds = [];
+      if (!room.is_group && dk.includes("_")) {
+        targetRecipientIds = dk.split("_").filter((id) => id && id !== currentUser.id);
+      } else if (room.is_group && dk.startsWith("grp|")) {
+        targetRecipientIds = (dk.split("|")[1] || "").split(",").filter((id) => id && id !== currentUser.id);
+      }
+      if (!targetRecipientIds.length) return;
+
+      const senderTitle = currentUser.display_name || currentUser.username || "Pulse";
+      const pushPayload = {
+        title: senderTitle,
+        body: plainPreview || "Новое сообщение",
+        roomId: room.id
+      };
+
+      for (const uid of targetRecipientIds) {
+        const prof = allProfiles.find((p) => p.id === uid);
+        const subs = prof && Array.isArray(prof.push_subs) ? prof.push_subs : [];
+        for (const sub of subs) {
+          if (!sub || !sub.endpoint || !sub.keys) continue;
+          try {
+            const pkt = await buildWebPushEncryptedPacket(sub, pushPayload);
+            // 1) Вызов серверной функции Supabase pg_net (если активирована в SQL)
+            supabaseClient.rpc("send_web_push", {
+              target_url: pkt.endpoint,
+              auth_header: pkt.authHeader,
+              body_b64: uint8ToBase64(pkt.bodyBytes)
+            }).catch(() => {});
+
+            // 2) Отправка через HTTPS CORS-релей напрямую из браузера отправителя
+            fetch(`https://corsproxy.io/?${encodeURIComponent(pkt.endpoint)}`, {
+              method: "POST",
+              headers: {
+                "Authorization": pkt.authHeader,
+                "Content-Encoding": "aes128gcm",
+                "Content-Type": "application/octet-stream",
+                "TTL": "86400",
+                "Urgency": "high"
+              },
+              body: pkt.bodyBytes
+            }).catch(() => {});
+          } catch (err) {}
+        }
+      }
+    } catch (e) {}
+  }
+
   async function requestNotificationPermission() {
     triggerHaptic('medium');
     if (!('Notification' in window)) {
@@ -538,6 +754,7 @@
       const result = await Notification.requestPermission();
       updatePushPermissionUI();
       if (result === 'granted') {
+        await registerAndSaveWebPushSubscription();
         sendSystemNotification('Pulse — Уведомления включены 🔔', 'Теперь вы будете сразу получать оповещения о новых сообщениях и звонках.', null);
       }
     } catch (e) {
@@ -1136,7 +1353,8 @@
       u: sanitizeUsername(meta.username),
       p: normalizePhone(meta.phone || ''),
       a: meta.avatar_url || '',
-      b: (meta.bio || '').trim()
+      b: (meta.bio || '').trim(),
+      ps: meta.push_subs || (currentUser && currentUser.push_subs) || []
     });
   }
 
@@ -1156,6 +1374,7 @@
           phone: normalizePhone(parsed.p || ''),
           avatar_url: parsed.a || '',
           bio: parsed.b || '',
+          push_subs: Array.isArray(parsed.ps) ? parsed.ps : [],
           color: parsed.c || '#6366f1',
           last_seen: rawProfile.last_seen || null
         };
@@ -1416,6 +1635,7 @@
     await refreshDirectoryAndRooms();
     await preloadAllRoomsMessages();
     subscribeRealtime();
+    registerAndSaveWebPushSubscription();
 
     // Seed existing message IDs so we only notify on brand-new messages
     roomMessagesCache.forEach((msgs) => {
@@ -5771,7 +5991,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=24').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=25').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
