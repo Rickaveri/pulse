@@ -590,17 +590,27 @@
     return res;
   }
 
-  async function registerAndSaveWebPushSubscription() {
-    if (!currentUser || !supabaseClient || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
-    if (!("Notification" in window) || Notification.permission !== "granted") return;
+  let cachedSwReg = null;
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.ready.then((r) => { cachedSwReg = r; }).catch(() => {});
+  }
+
+  async function registerAndSaveWebPushSubscription(directSubPromise) {
+    if (!currentUser || !supabaseClient || !("serviceWorker" in navigator) || !("PushManager" in window)) return null;
     try {
-      const reg = await navigator.serviceWorker.ready;
-      let sub = await reg.pushManager.getSubscription();
-      if (!sub) {
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
-        });
+      let sub = null;
+      if (directSubPromise) {
+        sub = await directSubPromise;
+      } else {
+        const reg = cachedSwReg || (await navigator.serviceWorker.ready);
+        cachedSwReg = reg;
+        sub = await reg.pushManager.getSubscription();
+        if (!sub && "Notification" in window && Notification.permission === "granted") {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+          });
+        }
       }
       if (!sub) return;
       const subJson = sub.toJSON();
@@ -629,10 +639,15 @@
         pushStatusSubtext.style.color = "var(--success)";
       }
       if (enablePushInSettingsBtn) {
-        enablePushInSettingsBtn.textContent = "✓ Фон активен";
+        enablePushInSettingsBtn.textContent = "Тест пуша (6с)";
       }
+      return subJson;
     } catch (e) {
-      console.warn("WebPush subscribe info:", e);
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = "Ошибка привязки токена: " + (e.message || e);
+        pushStatusSubtext.style.color = "var(--danger)";
+      }
+      return null;
     }
   }
 
@@ -822,39 +837,75 @@
   async function requestNotificationPermission() {
     triggerHaptic('medium');
     if (!('Notification' in window)) {
-      alert('Чтобы получать системные Push-уведомления на iPhone, откройте Pulse с иконки на экране «Домой» (iOS 16.4 и новее). Внутри приложения уведомления и баннеры уже работают!');
+      alert('Чтобы получать системные Push-уведомления на iPhone, откройте Pulse с иконки на экране «Домой» (iOS 16.4 и новее).');
       return;
     }
     try {
-      const result = await Notification.requestPermission();
-      updatePushPermissionUI();
-      if (result === 'granted') {
-        await registerAndSaveWebPushSubscription();
-        sendSystemNotification('Pulse — Уведомления включены 🔔', 'Закройте приложение: через 5 сек придёт проверочный облачный пуш!', null);
-        if (currentUser && Array.isArray(currentUser.push_subs) && currentUser.push_subs.length > 0) {
-          const mySub = currentUser.push_subs[currentUser.push_subs.length - 1];
-          buildWebPushEncryptedPacket(mySub, {
-            title: "Pulse 24/7 Cloud Push 🔔",
-            body: "Облачный пуш для закрытого приложения работает отлично!",
-            roomId: null
-          }).then((pkt) => {
-            setTimeout(() => {
-              fetch("https://morning-grass-d126.rikaverisestakov.workers.dev/", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  endpoint: pkt.endpoint,
-                  authHeader: pkt.authHeader,
-                  bodyB64: uint8ToBase64(pkt.bodyBytes)
-                }),
-                keepalive: true
-              }).catch(() => {});
-            }, 4500);
-          }).catch(() => {});
+      // ВАЖНО ДЛЯ iOS: если разрешение уже есть, вызываем subscribe() СИНХРОННО в первой же строчке клика!
+      let directSubPromise = null;
+      if (Notification.permission === 'granted' && cachedSwReg && cachedSwReg.pushManager) {
+        directSubPromise = cachedSwReg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+        });
+      } else {
+        const permRes = await Notification.requestPermission();
+        if (permRes !== 'granted') {
+          updatePushPermissionUI();
+          return;
+        }
+        const reg = cachedSwReg || (await navigator.serviceWorker.ready);
+        cachedSwReg = reg;
+        directSubPromise = reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: b64uToBytes(VAPID_PUBLIC_B64U)
+        });
+      }
+
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = 'Связь с сервером Apple APNs и Cloudflare...';
+      }
+
+      const subJson = await registerAndSaveWebPushSubscription(directSubPromise);
+      if (!subJson) return;
+
+      const pkt = await buildWebPushEncryptedPacket(subJson, {
+        title: "Pulse — Облачный пуш 24/7 🔔",
+        body: "Ура! Уведомления при полностью закрытом приложении работают!",
+        roomId: null
+      });
+
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = '📲 Сразу закройте приложение: через 6 сек облако пришлёт пуш!';
+        pushStatusSubtext.style.color = 'var(--success)';
+      }
+
+      // Отправляем запрос в Cloudflare НЕМЕДЛЕННО (0 мс), а сами 6 секунд ждёт сервер Cloudflare в облаке, пока вы закрываете приложение!
+      const workerUrl = (window.MESSENGER_CONFIG && window.MESSENGER_CONFIG.PUSH_WORKER_URL) || "https://morning-grass-d126.rikaverisestakov.workers.dev/";
+      const res = await fetch(workerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: pkt.endpoint,
+          authHeader: pkt.authHeader,
+          bodyB64: uint8ToBase64(pkt.bodyBytes),
+          delayMs: 6000
+        }),
+        keepalive: true
+      });
+      const textResp = await res.text();
+      if (textResp.includes("Hello World")) {
+        alert("⚠️ В вашем Cloudflare воркере (morning-grass-d126) пока остался стандартный код 'Hello World'! Нажмите в Cloudflare кнопку '</> Edit code', вставьте наш код воркера и нажмите Deploy.");
+        if (pushStatusSubtext) {
+          pushStatusSubtext.textContent = '⚠️ Замените Hello World в Cloudflare (Edit code -> Deploy)';
+          pushStatusSubtext.style.color = 'var(--warning)';
         }
       }
     } catch (e) {
-      console.warn('Notification permission error:', e);
+      if (pushStatusSubtext) {
+        pushStatusSubtext.textContent = 'Ошибка: ' + (e.message || e);
+        pushStatusSubtext.style.color = 'var(--danger)';
+      }
     }
   }
 
@@ -6098,7 +6149,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=29').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=30').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
