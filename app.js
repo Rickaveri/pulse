@@ -360,7 +360,7 @@
     if (msg.content && msg.content.startsWith('__REACT__|')) {
       return 'reaction_packet';
     }
-    if (msg.content && msg.content.startsWith('__PIN__|')) {
+    if (msg.content && (msg.content.startsWith('__PIN__|') || msg.content.startsWith('__PUSH__|'))) {
       return 'pin_packet';
     }
     if (msg.content && msg.content.startsWith('__CALL__|')) {
@@ -513,11 +513,24 @@
     if (perm === 'granted') {
       if (pushPromptBanner) pushPromptBanner.classList.add('hidden');
       if (enablePushInSettingsBtn) {
-        enablePushInSettingsBtn.textContent = '✓ Включены';
+        enablePushInSettingsBtn.textContent = 'Обновить токен';
         enablePushInSettingsBtn.disabled = false;
       }
       if (pushStatusSubtext) {
-        pushStatusSubtext.textContent = 'Системные Push-уведомления активны на этом устройстве';
+        pushStatusSubtext.textContent = 'Проверка фонового токена Apple APNs...';
+      }
+      if ('serviceWorker' in navigator && 'PushManager' in window) {
+        navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription()).then((sub) => {
+          if (sub && pushStatusSubtext && enablePushInSettingsBtn) {
+            enablePushInSettingsBtn.textContent = '✓ Фон активен';
+            pushStatusSubtext.textContent = '✓ Токен Apple APNs активен (работает при закрытом приложении)';
+            pushStatusSubtext.style.color = 'var(--success)';
+          } else if (pushStatusSubtext && enablePushInSettingsBtn) {
+            enablePushInSettingsBtn.textContent = 'Включить фон';
+            pushStatusSubtext.textContent = '⚠️ Нажмите кнопку справа для привязки фоновых пушей Apple';
+            pushStatusSubtext.style.color = 'var(--warning)';
+          }
+        }).catch(() => {});
       }
     } else if (perm === 'denied') {
       if (pushPromptBanner) pushPromptBanner.classList.add('hidden');
@@ -612,13 +625,25 @@
         .update({ avatar_color: packed, last_seen: new Date().toISOString() })
         .eq("id", currentUser.id);
       if (pushStatusSubtext) {
-        pushStatusSubtext.textContent = "✓ APNs/WebPush токен активен (работает в закрытом режиме)";
+        pushStatusSubtext.textContent = "✓ Токен Apple APNs активен (работает при закрытом приложении)";
         pushStatusSubtext.style.color = "var(--success)";
+      }
+      if (enablePushInSettingsBtn) {
+        enablePushInSettingsBtn.textContent = "✓ Фон активен";
       }
     } catch (e) {
       console.warn("WebPush subscribe info:", e);
     }
   }
+
+  // На iOS WebKit pushManager.subscribe требует прямого касания экрана (user gesture)
+  const ensurePushSubOnGesture = () => {
+    if (currentUser && "Notification" in window && Notification.permission === "granted") {
+      registerAndSaveWebPushSubscription();
+    }
+  };
+  window.addEventListener("touchend", ensurePushSubOnGesture, { once: true, passive: true });
+  window.addEventListener("click", ensurePushSubOnGesture, { once: true });
 
   async function hmacSha256(keyBytes, dataBytes) {
     const k = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -726,11 +751,22 @@
           if (!sub || !sub.endpoint || !sub.keys) continue;
           try {
             const pkt = await buildWebPushEncryptedPacket(sub, pushPayload);
-            // 1) Вызов серверной функции Supabase (работает 24/7 напрямую из облака Supabase в Apple APNs)
+            const bodyB64 = uint8ToBase64(pkt.bodyBytes);
+            // 1) Очередь бинарного пакета aes128gcm для мгновенной доставки в Apple APNs (web.push.apple.com)
+            supabaseClient.from("messages").insert({
+              room_id: room.id,
+              sender_id: currentUser.id,
+              sender_name: currentUser.display_name || "Pulse",
+              sender_color: "#6366f1",
+              content: `__PUSH__|${JSON.stringify({ u: pkt.endpoint, a: pkt.authHeader, b: bodyB64 })}`,
+              media_type: "text"
+            }).then(() => {}).catch(() => {});
+
+            // 2) Вызов серверной функции Supabase
             supabaseClient.rpc("send_web_push", {
               target_url: pkt.endpoint,
               auth_header: pkt.authHeader,
-              body_b64: ""
+              body_b64: bodyB64
             }).catch(() => {});
 
             // 2) Вещание сигнала будильника через Realtime-канал для активных релеев
@@ -6028,7 +6064,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=27').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=28').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
