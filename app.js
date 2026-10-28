@@ -1280,11 +1280,12 @@
     }
     const lastMsg = visible[visible.length - 1];
     const rawPreview = await extractMessagePreviewText(lastMsg, room);
-    const isLastMine = lastMsg.sender_id === currentUser.id;
+    const isSavedRm = (room.direct_key || '').startsWith('saved_');
+    const isLastMine = !isSavedRm && lastMsg.sender_id === currentUser.id;
     const msgTs = new Date(lastMsg.created_at).getTime();
     const peerReadTs = isLastMine ? getPeerReadTimestampForRoom(room, visible) : 0;
     const isLastRead = isLastMine && peerReadTs >= (msgTs - 1500);
-    const prefix = isLastMine ? 'Вы: ' : '';
+    const prefix = lastMsg.sender_id === currentUser.id && !isSavedRm ? 'Вы: ' : '';
     roomSummaryMap.set(room.id, {
       preview: `${prefix}${rawPreview}`,
       timeStr: formatShortRoomTime(lastMsg.created_at),
@@ -1783,12 +1784,20 @@
   }
 
   function renderAvatarElement(el, { avatar_url, letter, color }) {
+    if (!el) return;
+    const cleanLetter = (letter || 'U')[0].toUpperCase();
+    const cleanColor = color || '#6366f1';
+    const nextKey = avatar_url ? `img:${avatar_url}` : `txt:${cleanLetter}:${cleanColor}`;
+    if (el.dataset.renderedAvatarKey === nextKey) return;
+    el.dataset.renderedAvatarKey = nextKey;
+
     if (avatar_url) {
-      el.innerHTML = `<img src="${escapeHtml(avatar_url)}" alt="Аватар" />`;
+      el.innerHTML = `<img src="${escapeHtml(avatar_url)}" alt="Аватар" decoding="async" />`;
       el.style.background = 'transparent';
     } else {
-      el.textContent = (letter || 'U')[0].toUpperCase();
-      el.style.background = color || '#6366f1';
+      el.innerHTML = '';
+      el.textContent = cleanLetter;
+      el.style.background = cleanColor;
     }
   }
 
@@ -2374,7 +2383,31 @@
 
         item.appendChild(avatarWrap);
         item.appendChild(body);
+        let touchStartY = 0;
+        let touchStartX = 0;
+        let openedOnTouch = false;
+        item.addEventListener('touchstart', (ev) => {
+          const t = ev.touches && ev.touches[0];
+          if (t) {
+            touchStartX = t.clientX;
+            touchStartY = t.clientY;
+          }
+          openedOnTouch = false;
+        }, { passive: true });
+        item.addEventListener('touchend', (ev) => {
+          const t = ev.changedTouches && ev.changedTouches[0];
+          if (!t) return;
+          if (Math.abs(t.clientX - touchStartX) < 12 && Math.abs(t.clientY - touchStartY) < 12) {
+            openedOnTouch = true;
+            triggerHaptic('light');
+            selectRoom(room);
+          }
+        }, { passive: true });
         item.addEventListener('click', () => {
+          if (openedOnTouch) {
+            openedOnTouch = false;
+            return;
+          }
           triggerHaptic('light');
           selectRoom(room);
         });
@@ -3154,7 +3187,7 @@
           const vid = document.createElement('video');
           vid.src = msg.media_url;
           vid.playsInline = true;
-          vid.loop = true;
+          vid.loop = false;
           vid.muted = false;
           vid.preload = 'metadata';
           vid.addEventListener('loadedmetadata', () => {
@@ -3169,11 +3202,20 @@
           badge.className = 'video-note-badge circle-play-badge';
           badge.textContent = '▶ Кружочек';
 
+          vid.addEventListener('ended', () => {
+            vid.pause();
+            try { vid.currentTime = 0; } catch (e) {}
+            badge.textContent = '▶ Кружочек';
+          });
+
           circleWrap.addEventListener('click', (ev) => {
             ev.stopPropagation();
             triggerHaptic('light');
-            if (vid.paused) {
-              vid.play();
+            if (vid.paused || vid.ended) {
+              if (vid.ended) {
+                try { vid.currentTime = 0; } catch (e) {}
+              }
+              vid.play().catch(() => {});
               badge.textContent = '⏸ Пауза';
             } else {
               vid.pause();
@@ -3258,7 +3300,8 @@
       timeSpan.textContent = timeStr;
       meta.appendChild(timeSpan);
 
-      if (isMine) {
+      const isSavedRoomView = (roomSnapshot.direct_key || '').startsWith('saved_');
+      if (isMine && !isSavedRoomView) {
         const peerReadTs = getPeerReadTimestampForRoom(roomSnapshot, actualMessages);
         const msgTimeMs = new Date(msg.created_at).getTime();
         const isReadByPeer = !msg._optimistic && peerReadTs >= (msgTimeMs - 1500);
@@ -3401,8 +3444,9 @@
       });
     }
 
-    // Фирменная живая капсула статуса прочтения под последним сообщением (Pulse Seen Capsule v37)
-    if (filteredList.length > 0 && !activeChatFilterQuery) {
+    // Фирменная живая капсула статуса прочтения под последним сообщением (НЕ показываем в Избранном!)
+    const isSavedRoomNow = (roomSnapshot.direct_key || '').startsWith('saved_');
+    if (filteredList.length > 0 && !activeChatFilterQuery && !isSavedRoomNow) {
       const lastEntry = filteredList[filteredList.length - 1];
       if (lastEntry && lastEntry.msg && lastEntry.msg.sender_id === currentUser.id) {
         const peerReadTs = getPeerReadTimestampForRoom(roomSnapshot, actualMessages);
@@ -4136,34 +4180,105 @@
     return cachedAudioStream;
   }
 
+  let vcCanvas = null;
+  let vcCanvasCtx = null;
+  let vcDrawRafId = null;
+  let vcCameraTrackStream = null;
+  let isFinishingRecord = false;
+
+  function stopVcCanvasLoop() {
+    if (vcDrawRafId) {
+      cancelAnimationFrame(vcDrawRafId);
+      vcDrawRafId = null;
+    }
+    if (vcCameraTrackStream) {
+      vcCameraTrackStream.getTracks().forEach((t) => t.stop());
+      vcCameraTrackStream = null;
+    }
+  }
+
+  function startVcCanvasDrawingLoop() {
+    if (!vcCanvas) {
+      vcCanvas = document.createElement('canvas');
+      vcCanvas.width = 360;
+      vcCanvas.height = 360;
+      vcCanvasCtx = vcCanvas.getContext('2d');
+    }
+    const drawFrame = () => {
+      if (!isRecording || recordMode !== 'video') return;
+      if (videoCirclePreview && videoCirclePreview.readyState >= 2 && !isRecordingPaused) {
+        const vw = videoCirclePreview.videoWidth || 360;
+        const vh = videoCirclePreview.videoHeight || 360;
+        const side = Math.min(vw, vh);
+        const sx = Math.floor((vw - side) / 2);
+        const sy = Math.floor((vh - side) / 2);
+        vcCanvasCtx.save();
+        if (cameraFacingMode === 'user') {
+          vcCanvasCtx.translate(360, 0);
+          vcCanvasCtx.scale(-1, 1);
+        }
+        vcCanvasCtx.drawImage(videoCirclePreview, sx, sy, side, side, 0, 0, 360, 360);
+        vcCanvasCtx.restore();
+      }
+      vcDrawRafId = requestAnimationFrame(drawFrame);
+    };
+    drawFrame();
+  }
+
   async function startMediaRecording(mode) {
-    if (isRecording || !activeRoom) return;
+    if (isRecording || isFinishingRecord || !activeRoom) return;
     try {
       const isVideo = mode === 'video';
       cameraFacingMode = 'user';
 
-      const stream = isVideo
-        ? await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-            video: { facingMode: cameraFacingMode, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
-          })
-        : await acquireVoiceStreamOnce();
-
-      activeMediaStream = stream;
-      isRecording = true;
-      isRecordingLocked = isVideo;
-      isRecordingPaused = false;
-      recordCanceled = false;
-      recordedChunks = [];
-      elapsedRecordMs = 0;
-      lastResumeTime = Date.now();
-
+      let recorderStream = null;
       if (isVideo) {
-        videoCirclePreview.srcObject = stream;
+        const camStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: { facingMode: cameraFacingMode, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
+        });
+        vcCameraTrackStream = camStream;
+        videoCirclePreview.srcObject = camStream;
+        videoCirclePreview.muted = true;
+        videoCirclePreview.playsInline = true;
+        videoCirclePreview.play().catch(() => {});
         videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
+
+        isRecording = true;
+        isRecordingLocked = true;
+        isRecordingPaused = false;
+        recordCanceled = false;
+        recordedChunks = [];
+        elapsedRecordMs = 0;
+        lastResumeTime = Date.now();
+
+        startVcCanvasDrawingLoop();
+
+        // Объединяем непрерывный поток холста (360x360 @ 24fps) и микрофона, чтобы при переключении фронталки/основной камеры запись НЕ прерывалась!
+        if (vcCanvas && typeof vcCanvas.captureStream === 'function') {
+          const canvasStream = vcCanvas.captureStream(24);
+          const combined = new MediaStream();
+          canvasStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+          camStream.getAudioTracks().forEach((t) => combined.addTrack(t));
+          recorderStream = combined;
+        } else {
+          recorderStream = camStream;
+        }
+        activeMediaStream = recorderStream;
         vcPauseBtn.textContent = '⏸ Пауза';
         videoCircleOverlay.classList.remove('hidden');
       } else {
+        const audioStream = await acquireVoiceStreamOnce();
+        activeMediaStream = audioStream;
+        recorderStream = audioStream;
+        isRecording = true;
+        isRecordingLocked = false;
+        isRecordingPaused = false;
+        recordCanceled = false;
+        recordedChunks = [];
+        elapsedRecordMs = 0;
+        lastResumeTime = Date.now();
+
         messageInput.classList.add('hidden');
         recordingBar.classList.remove('hidden');
         pauseVoiceBtn.textContent = '⏸ Пауза';
@@ -4175,8 +4290,8 @@
 
       recordTimerInterval = setInterval(updateRecordingTimersUI, 300);
 
-      activeMediaRecorder = createMediaRecorderForStream(stream, isVideo);
-      activeMediaRecorder.start(250);
+      activeMediaRecorder = createMediaRecorderForStream(recorderStream, isVideo);
+      activeMediaRecorder.start(200);
     } catch (err) {
       alert('Для записи разрешите доступ к микрофону и камере в браузере.');
       cleanupRecordingUI();
@@ -4210,21 +4325,43 @@
     };
 
     recorder.onstop = async () => {
-      if (record.keepRecordingOnFlip) return;
-
+      isFinishingRecord = false;
       const wasCanceled = recordCanceled;
       const chunks = [...recordedChunks];
       const recMime = recorder.mimeType || (isVideo ? 'video/mp4' : 'audio/webm');
-      const totalSec = getElapsedRecordingSeconds();
+      const totalSec = Math.max(1, getElapsedRecordingSeconds());
+      const targetRoomSnapshot = activeRoom;
       cleanupRecordingUI();
 
-      if (wasCanceled || chunks.length === 0 || !activeRoom) return;
+      if (wasCanceled || chunks.length === 0 || !targetRoomSnapshot) return;
 
       const blob = new Blob(chunks, { type: recMime });
       const ext = isVideo
         ? recMime.includes('mp4') ? 'mp4' : 'webm'
         : recMime.includes('mp4') ? 'm4a' : 'webm';
-      const path = `${activeRoom.id}/${isVideo ? 'circle' : 'voice'}_${Date.now()}.${ext}`;
+      const path = `${targetRoomSnapshot.id}/${isVideo ? 'circle' : 'voice'}_${Date.now()}.${ext}`;
+
+      // Мгновенно показываем оптимистичное сообщение в ленте чата (0 мс), чтобы пользователь сразу видел отправку!
+      const tempId = `optimistic_msg_${Date.now()}`;
+      const localBlobUrl = URL.createObjectURL(blob);
+      const optimisticMediaRow = {
+        id: tempId,
+        room_id: targetRoomSnapshot.id,
+        sender_id: currentUser.id,
+        sender_name: currentUser.display_name,
+        sender_color: currentUser.color,
+        content: '',
+        media_url: localBlobUrl,
+        media_type: 'audio',
+        media_duration: totalSec,
+        created_at: new Date().toISOString(),
+        _optimistic: true
+      };
+      if (activeRoom && activeRoom.id === targetRoomSnapshot.id) {
+        roomMessages.push(optimisticMediaRow);
+        roomMessagesCache.set(targetRoomSnapshot.id, roomMessages);
+        await renderMessages(targetRoomSnapshot.id, true);
+      }
 
       try {
         const { error: upErr } = await supabaseClient.storage
@@ -4233,24 +4370,38 @@
         if (upErr) throw upErr;
 
         const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
-        const { error } = await insertMessageRow({
-          room_id: activeRoom.id,
+        const { data: insertedRows, error } = await insertMessageRow({
+          room_id: targetRoomSnapshot.id,
           content: '',
           media_url: pub.publicUrl,
           media_type: 'audio',
           media_duration: totalSec
         });
         if (error) throw error;
-        await loadMessages(activeRoom.id);
+
+        if (insertedRows && insertedRows[0]) {
+          const realRow = insertedRows[0];
+          roomMessages = roomMessages.map((m) => (m.id === tempId ? realRow : m));
+          const seenIds = new Set();
+          roomMessages = roomMessages.filter((m) => {
+            if (seenIds.has(m.id)) return false;
+            seenIds.add(m.id);
+            return true;
+          });
+          roomMessagesCache.set(targetRoomSnapshot.id, roomMessages);
+          await updateSingleRoomSummaryFromMessages(targetRoomSnapshot, roomMessages);
+          if (activeRoom && activeRoom.id === targetRoomSnapshot.id) {
+            await renderMessages(targetRoomSnapshot.id, true);
+          }
+        }
       } catch (err) {
         alert('Не удалось отправить запись: ' + (err.message || err));
+        await loadMessages(targetRoomSnapshot.id, true);
       }
     };
 
     return recorder;
   }
-
-  const record = { keepRecordingOnFlip: false };
 
   function togglePauseRecording() {
     if (!isRecording || !activeMediaRecorder) return;
@@ -4280,57 +4431,80 @@
   pauseVoiceBtn.addEventListener('click', togglePauseRecording);
   vcPauseBtn.addEventListener('click', togglePauseRecording);
 
-  vcFlipCamBtn.addEventListener('click', async () => {
-    if (!isRecording || recordMode !== 'video') return;
-    triggerHaptic('light');
-    cameraFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
-    try {
-      record.keepRecordingOnFlip = true;
-      if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
-        activeMediaRecorder.stop();
-      }
-      if (activeMediaStream) {
-        activeMediaStream.getTracks().forEach((t) => t.stop());
-      }
-
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: { facingMode: cameraFacingMode, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
-      });
-
-      activeMediaStream = newStream;
-      videoCirclePreview.srcObject = newStream;
-      videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
-
-      record.keepRecordingOnFlip = false;
-      activeMediaRecorder = createMediaRecorderForStream(newStream, true);
-      activeMediaRecorder.start(250);
-      if (isRecordingPaused && activeMediaRecorder.pause) {
-        try { activeMediaRecorder.pause(); } catch (e) {}
-      }
-    } catch (err) {
-      record.keepRecordingOnFlip = false;
-      alert('Не удалось переключить камеру: ' + (err.message || err));
+  // Бесшовное переключение камеры прямо во время записи кружочка БЕЗ остановки MediaRecorder!
+  let isFlippingCamera = false;
+  async function flipVideoCircleCamera(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
     }
-  });
-
-  function finishRecordingAndSend() {
-    if (!isRecording || !activeMediaRecorder) return;
-    triggerHaptic('medium');
-    recordCanceled = false;
-    record.keepRecordingOnFlip = false;
-    if (activeMediaRecorder.state !== 'inactive') {
-      activeMediaRecorder.stop();
+    if (!isRecording || recordMode !== 'video' || isFlippingCamera) return;
+    isFlippingCamera = true;
+    triggerHaptic('light');
+    const nextFacing = cameraFacingMode === 'user' ? 'environment' : 'user';
+    try {
+      const newVideoOnlyStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: nextFacing, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } },
+        audio: false
+      });
+      const newVideoTrack = newVideoOnlyStream.getVideoTracks()[0];
+      if (newVideoTrack && vcCameraTrackStream) {
+        vcCameraTrackStream.getVideoTracks().forEach((oldTrack) => {
+          vcCameraTrackStream.removeTrack(oldTrack);
+          oldTrack.stop();
+        });
+        vcCameraTrackStream.addTrack(newVideoTrack);
+      }
+      cameraFacingMode = nextFacing;
+      videoCirclePreview.srcObject = vcCameraTrackStream;
+      videoCirclePreview.classList.toggle('mirrored', cameraFacingMode === 'user');
+      await videoCirclePreview.play().catch(() => {});
+    } catch (err) {
+      alert('Не удалось переключить камеру: ' + (err.message || err));
+    } finally {
+      isFlippingCamera = false;
     }
   }
 
-  function cancelActiveRecording() {
+  vcFlipCamBtn.addEventListener('click', flipVideoCircleCamera);
+
+  function finishRecordingAndSend(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    if (!isRecording || !activeMediaRecorder || isFinishingRecord) return;
+    isFinishingRecord = true;
+    triggerHaptic('medium');
+    recordCanceled = false;
+    try {
+      if (activeMediaRecorder.state === 'paused' && activeMediaRecorder.resume) {
+        activeMediaRecorder.resume();
+      }
+      if (activeMediaRecorder.state !== 'inactive') {
+        try { activeMediaRecorder.requestData(); } catch (e) {}
+        activeMediaRecorder.stop();
+      } else {
+        isFinishingRecord = false;
+        cleanupRecordingUI();
+      }
+    } catch (e) {
+      isFinishingRecord = false;
+      cleanupRecordingUI();
+    }
+  }
+
+  function cancelActiveRecording(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
     if (!isRecording) return;
     triggerHaptic('light');
     recordCanceled = true;
-    record.keepRecordingOnFlip = false;
+    isFinishingRecord = false;
     if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
-      activeMediaRecorder.stop();
+      try { activeMediaRecorder.stop(); } catch (e) { cleanupRecordingUI(); }
     } else {
       cleanupRecordingUI();
     }
@@ -4339,12 +4513,16 @@
   cancelRecordBtn.addEventListener('click', cancelActiveRecording);
   vcCancelBtn.addEventListener('click', cancelActiveRecording);
   vcSendBtn.addEventListener('click', finishRecordingAndSend);
+  vcSendBtn.addEventListener('touchend', finishRecordingAndSend, { passive: false });
+  vcCancelBtn.addEventListener('touchend', cancelActiveRecording, { passive: false });
+  vcFlipCamBtn.addEventListener('touchend', flipVideoCircleCamera, { passive: false });
 
   function cleanupRecordingUI() {
     isRecording = false;
     isRecordingLocked = false;
     isRecordingPaused = false;
     clearInterval(recordTimerInterval);
+    stopVcCanvasLoop();
     if (activeMediaStream) {
       if (activeMediaStream === cachedAudioStream) {
         activeMediaStream.getAudioTracks().forEach((t) => {
@@ -6669,7 +6847,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=40').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=41').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
