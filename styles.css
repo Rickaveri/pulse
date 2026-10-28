@@ -2802,9 +2802,14 @@ body.keyboard-open .composer {
 
 
 /* 120 FPS ProMotion оптимизация длинных чатов + Кнопка скорости аудио 1x/1.5x/2x + Превью ссылок (v36) */
+.messages-viewport {
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+}
+
 .msg-row {
-  content-visibility: auto;
-  contain-intrinsic-size: 0 54px;
+  backface-visibility: hidden;
+  transform: translateZ(0);
 }
 
 .audio-speed-pill {

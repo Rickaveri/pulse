@@ -1560,8 +1560,9 @@
     });
   });
 
-  // 4. Сквозное шифрование AES-256-GCM
+  // 4. Сквозное шифрование AES-256-GCM (с мгновенным RAM-кэшем расшифровки и Promise-дедупликацией ключей v38)
   const cryptoKeyCache = new Map();
+  const decryptedTextCache = new Map();
 
   function getRoomCustomSecret(roomId) {
     return localStorage.getItem(`pulse_e2e_${roomId}`) || '';
@@ -1573,40 +1574,42 @@
     } else {
       localStorage.removeItem(`pulse_e2e_${roomId}`);
     }
-    cryptoKeyCache.delete(roomId);
+    cryptoKeyCache.clear();
+    decryptedTextCache.clear();
   }
 
-  async function deriveRoomCryptoKey(room) {
+  function deriveRoomCryptoKey(room) {
     const roomId = room.id;
     const customSecret = getRoomCustomSecret(roomId);
     const cacheKey = `${roomId}:${customSecret}`;
     if (cryptoKeyCache.has(cacheKey)) return cryptoKeyCache.get(cacheKey);
 
-    const enc = new TextEncoder();
-    const baseMaterial = `pulse-aes256-v1|${room.direct_key || room.id}|${customSecret}`;
-    const keyMaterial = await crypto.subtle.importKey(
-      'raw',
-      enc.encode(baseMaterial),
-      { name: 'PBKDF2' },
-      false,
-      ['deriveKey']
-    );
+    const keyPromise = (async () => {
+      const enc = new TextEncoder();
+      const baseMaterial = `pulse-aes256-v1|${room.direct_key || room.id}|${customSecret}`;
+      const keyMaterial = await crypto.subtle.importKey(
+        'raw',
+        enc.encode(baseMaterial),
+        { name: 'PBKDF2' },
+        false,
+        ['deriveKey']
+      );
+      return crypto.subtle.deriveKey(
+        {
+          name: 'PBKDF2',
+          salt: enc.encode(`pulse-salt-${room.id}`),
+          iterations: 100000,
+          hash: 'SHA-256'
+        },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    })();
 
-    const derivedKey = await crypto.subtle.deriveKey(
-      {
-        name: 'PBKDF2',
-        salt: enc.encode(`pulse-salt-${room.id}`),
-        iterations: 100000,
-        hash: 'SHA-256'
-      },
-      keyMaterial,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
-
-    cryptoKeyCache.set(cacheKey, derivedKey);
-    return derivedKey;
+    cryptoKeyCache.set(cacheKey, keyPromise);
+    return keyPromise;
   }
 
   async function encryptTextForRoom(plainText, room) {
@@ -1619,7 +1622,10 @@
 
       const ivB64 = uint8ToBase64(iv);
       const cipherB64 = uint8ToBase64(new Uint8Array(cipherBuf));
-      return `ENC1:${ivB64}:${cipherB64}`;
+      const cipherStr = `ENC1:${ivB64}:${cipherB64}`;
+      const customSecret = getRoomCustomSecret(room.id);
+      decryptedTextCache.set(`${room.id}:${customSecret}:${cipherStr}`, plainText);
+      return cipherStr;
     } catch (e) {
       return plainText;
     }
@@ -1627,6 +1633,11 @@
 
   async function decryptTextForRoom(storedText, room) {
     if (!storedText || !storedText.startsWith('ENC1:')) return storedText;
+    const customSecret = getRoomCustomSecret(room.id);
+    const memoKey = `${room.id}:${customSecret}:${storedText}`;
+    if (decryptedTextCache.has(memoKey)) {
+      return decryptedTextCache.get(memoKey);
+    }
     try {
       const parts = storedText.split(':');
       if (parts.length !== 3) return storedText;
@@ -1634,7 +1645,12 @@
       const cipherBytes = base64ToUint8(parts[2]);
       const key = await deriveRoomCryptoKey(room);
       const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipherBytes);
-      return new TextDecoder().decode(plainBuf);
+      const decoded = new TextDecoder().decode(plainBuf);
+      if (decryptedTextCache.size > 2500) {
+        decryptedTextCache.clear();
+      }
+      decryptedTextCache.set(memoKey, decoded);
+      return decoded;
     } catch (e) {
       return '🔒 [Сообщение зашифровано секретным ключом чата]';
     }
@@ -2560,7 +2576,6 @@
     updateSmartActionButtonUI();
     updateActiveRoomHeader();
 
-    messagesViewport.innerHTML = '';
     if (scrollBottomBtn) scrollBottomBtn.classList.add('hidden');
     if (pinnedMsgBar) pinnedMsgBar.classList.add('hidden');
 
@@ -2569,6 +2584,8 @@
       roomMessages = cachedMsgs;
       await renderMessages(room.id);
     } else {
+      messagesViewport.innerHTML = '';
+      messagesViewport.dataset.renderedRoomId = '';
       roomMessages = [];
     }
 
@@ -2881,9 +2898,13 @@
         })
       : decryptedList;
 
-    messagesViewport.innerHTML = '';
+    const distFromBottomBefore =
+      messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+    const wasNearBottom = distFromBottomBefore < 140 || messagesViewport.dataset.renderedRoomId !== roomSnapshot.id;
 
     if (filteredList.length === 0) {
+      messagesViewport.innerHTML = '';
+      messagesViewport.dataset.renderedRoomId = roomSnapshot.id;
       const empty = document.createElement('div');
       empty.style.margin = 'auto';
       empty.style.textAlign = 'center';
@@ -2896,25 +2917,93 @@
       return;
     }
 
+    const isSameRoomIncremental =
+      messagesViewport.dataset.renderedRoomId === roomSnapshot.id && !activeChatFilterQuery;
+
+    // Собираем уже отрисованные строки сообщений, чтобы НЕ пересоздавать их заново и избежать малейшего дёргания!
+    const existingRowsById = new Map();
+    const existingOptRows = [];
+    if (isSameRoomIncremental) {
+      Array.from(messagesViewport.querySelectorAll('.msg-row')).forEach((el) => {
+        const mid = el.dataset.msgId || '';
+        if (mid.startsWith('optimistic_msg_')) {
+          existingOptRows.push(el);
+        } else if (mid) {
+          existingRowsById.set(mid, el);
+        }
+      });
+    } else {
+      messagesViewport.innerHTML = '';
+      messagesViewport.dataset.renderedRoomId = roomSnapshot.id;
+    }
+
+    const oldCapsule = document.getElementById('pulseLiveSeenCapsule');
+    if (oldCapsule) oldCapsule.remove();
+
+    const peerReadTsForAll = getPeerReadTimestampForRoom(roomSnapshot, actualMessages);
     let lastDateKey = '';
+    const existingDateKeys = new Set();
+    if (isSameRoomIncremental) {
+      Array.from(messagesViewport.querySelectorAll('.date-divider')).forEach((dEl) => {
+        if (dEl.dataset.dateKey) existingDateKeys.add(dEl.dataset.dateKey);
+      });
+    }
+
+    const validDomIds = new Set();
 
     filteredList.forEach(({ msg, plain }) => {
       const dKey = new Date(msg.created_at).toDateString();
       if (dKey !== lastDateKey) {
         lastDateKey = dKey;
-        const sep = document.createElement('div');
-        sep.className = 'date-divider date-separator';
-        sep.innerHTML = `<span>${escapeHtml(formatDateSeparator(msg.created_at))}</span>`;
-        messagesViewport.appendChild(sep);
+        if (!existingDateKeys.has(dKey)) {
+          existingDateKeys.add(dKey);
+          const sep = document.createElement('div');
+          sep.className = 'date-divider date-separator';
+          sep.dataset.dateKey = dKey;
+          sep.innerHTML = `<span>${escapeHtml(formatDateSeparator(msg.created_at))}</span>`;
+          messagesViewport.appendChild(sep);
+        }
       }
 
       const isMine = msg.sender_id === currentUser.id;
+      const packetMapForSig = reactionsByTargetId.get(msg.id);
+      const reactSig = packetMapForSig
+        ? Array.from(packetMapForSig.entries()).map(([u, v]) => `${u}:${v.emoji}`).join(',')
+        : '';
+      const rowSig = `${msg.content || ''}|${reactSig}`;
+
+      validDomIds.add(String(msg.id));
+
+      // Проверяем: есть ли уже эта строка в DOM (или её оптимистичный двойник при отправке)
+      let reusableRow = existingRowsById.get(String(msg.id));
+      if (!reusableRow && isMine && !String(msg.id).startsWith('optimistic_') && existingOptRows.length > 0) {
+        const matchIdx = existingOptRows.findIndex((el) => el.dataset.rowSig === rowSig);
+        if (matchIdx !== -1) {
+          reusableRow = existingOptRows.splice(matchIdx, 1)[0];
+          reusableRow.dataset.msgId = String(msg.id);
+        }
+      }
+
+      if (reusableRow && reusableRow.dataset.rowSig === rowSig) {
+        // Обновляем только галочки прочтения (✓ -> ✓✓) на месте, НЕ трогая сам пузырёк сообщения!
+        if (isMine) {
+          const ticksEl = reusableRow.querySelector('.read-ticks');
+          if (ticksEl) {
+            const msgTimeMs = new Date(msg.created_at).getTime();
+            const isReadByPeer = !msg._optimistic && peerReadTsForAll >= (msgTimeMs - 1500);
+            ticksEl.className = `read-ticks ${isReadByPeer ? 'is-read' : 'is-sent'}`;
+            ticksEl.textContent = msg._optimistic ? '⏳' : isReadByPeer ? '✓✓' : '✓';
+          }
+        }
+        return;
+      }
       const sender = allProfiles.find((p) => p.id === msg.sender_id);
       const senderName = (sender && sender.display_name) || msg.sender_name || 'Пользователь';
 
       const row = document.createElement('div');
       row.className = `msg-row ${isMine ? 'own mine' : 'other theirs'}`;
       row.dataset.msgId = msg.id;
+      row.dataset.rowSig = rowSig;
 
       if (roomSnapshot.is_group && !isMine) {
         const authorEl = document.createElement('div');
@@ -3212,8 +3301,21 @@
         }, 175);
       });
 
-      messagesViewport.appendChild(row);
+      if (reusableRow && reusableRow.parentNode === messagesViewport) {
+        messagesViewport.replaceChild(row, reusableRow);
+      } else {
+        messagesViewport.appendChild(row);
+      }
     });
+
+    // Удаляем устаревшие строки (например, удалённые сообщения или старые временные строки)
+    if (isSameRoomIncremental) {
+      Array.from(messagesViewport.querySelectorAll('.msg-row')).forEach((el) => {
+        if (!validDomIds.has(String(el.dataset.msgId || ''))) {
+          el.remove();
+        }
+      });
+    }
 
     // Фирменная живая капсула статуса прочтения под последним сообщением (Pulse Seen Capsule v37)
     if (filteredList.length > 0 && !activeChatFilterQuery) {
@@ -3249,7 +3351,7 @@
       }
     }
 
-    if (!activeChatFilterQuery) {
+    if (!activeChatFilterQuery && wasNearBottom) {
       messagesViewport.scrollTop = messagesViewport.scrollHeight;
     }
   }
@@ -3713,7 +3815,7 @@
     roomMessagesCache.set(roomSnapshot.id, roomMessages);
     await renderMessages(roomSnapshot.id);
 
-    const { error } = await insertMessageRow({
+    const { data: insertedRows, error } = await insertMessageRow({
       room_id: roomSnapshot.id,
       content: encrypted,
       media_type: 'text'
@@ -3721,8 +3823,29 @@
 
     if (error) {
       alert('Ошибка отправки: ' + error.message);
+      await loadMessages(roomSnapshot.id);
+      return;
     }
-    await loadMessages(roomSnapshot.id);
+
+    if (insertedRows && insertedRows[0]) {
+      const realRow = insertedRows[0];
+      roomMessages = roomMessages.map((m) => (m.id === tempId ? realRow : m));
+      // Удаляем дубликат, если realtime уже успел добавить его
+      const seenIds = new Set();
+      roomMessages = roomMessages.filter((m) => {
+        if (seenIds.has(m.id)) return false;
+        seenIds.add(m.id);
+        return true;
+      });
+      roomMessagesCache.set(roomSnapshot.id, roomMessages);
+      await updateSingleRoomSummaryFromMessages(roomSnapshot, roomMessages);
+      if (!appShell.classList.contains('chat-active')) {
+        renderSidebarList();
+      }
+      if (activeRoom && activeRoom.id === roomSnapshot.id) {
+        await renderMessages(roomSnapshot.id);
+      }
+    }
   }
 
   messageInput.addEventListener('input', () => {
@@ -4652,13 +4775,16 @@
       })
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (!payload || payload.user_id === currentUser.id) return;
-        typingByRoom.set(payload.room_id, { userId: payload.user_id, ts: Date.now() });
-        renderSidebarList();
-        updateActiveRoomHeader();
-        setTimeout(() => {
-          renderSidebarList();
+        const prevEntry = typingByRoom.get(payload.room_id);
+        if (prevEntry && prevEntry.timerId) clearTimeout(prevEntry.timerId);
+        const timerId = setTimeout(() => {
+          typingByRoom.delete(payload.room_id);
           updateActiveRoomHeader();
-        }, 3600);
+          if (!appShell.classList.contains('chat-active')) renderSidebarList();
+        }, 3400);
+        typingByRoom.set(payload.room_id, { userId: payload.user_id, ts: Date.now(), timerId });
+        updateActiveRoomHeader();
+        if (!appShell.classList.contains('chat-active')) renderSidebarList();
       })
       .on('broadcast', { event: 'call-signal' }, ({ payload }) => {
         handleIncomingCallSignal(payload);
@@ -4667,9 +4793,23 @@
         if (!payload || !currentUser || payload.sender_id === currentUser.id) return;
         await handleIncomingMessageNotification(payload);
         if (activeRoom && payload.room_id === activeRoom.id) {
-          await loadMessages(activeRoom.id);
-        } else {
-          await preloadAllRoomsMessages();
+          if (!roomMessages.some((m) => m.id === payload.id)) {
+            roomMessages.push(payload);
+            roomMessagesCache.set(activeRoom.id, roomMessages);
+            await renderMessages(activeRoom.id);
+            await updateSingleRoomSummaryFromMessages(activeRoom, roomMessages);
+          }
+        } else if (payload.room_id) {
+          const cached = roomMessagesCache.get(payload.room_id) || [];
+          if (!cached.some((m) => m.id === payload.id)) {
+            cached.push(payload);
+            roomMessagesCache.set(payload.room_id, cached);
+            const rm = myRooms.find((r) => r.id === payload.room_id);
+            if (rm) {
+              await updateSingleRoomSummaryFromMessages(rm, cached);
+              renderSidebarList();
+            }
+          }
         }
       })
       .on(
@@ -4681,22 +4821,29 @@
 
           if (payload.eventType === 'INSERT' && payload.new) {
             await handleIncomingMessageNotification(payload.new);
+            if (activeRoom && incoming.room_id === activeRoom.id) {
+              // Если сообщение уже добавлено локально (optimistic или через broadcast) — не дёргаем сеть и DOM повторно!
+              if (roomMessages.some((m) => m.id === incoming.id || (m._optimistic && m.content === incoming.content))) {
+                return;
+              }
+              roomMessages.push(incoming);
+              roomMessagesCache.set(activeRoom.id, roomMessages);
+              await renderMessages(activeRoom.id);
+              await updateSingleRoomSummaryFromMessages(activeRoom, roomMessages);
+              return;
+            }
           }
 
           if (activeRoom && incoming.room_id === activeRoom.id) {
             await loadMessages(activeRoom.id);
           } else if (incoming.room_id) {
-            const { data } = await supabaseClient
-              .from('messages')
-              .select('*')
-              .eq('room_id', incoming.room_id)
-              .order('created_at', { ascending: true })
-              .limit(150);
-            if (data) {
-              roomMessagesCache.set(incoming.room_id, data);
+            const cached = roomMessagesCache.get(incoming.room_id) || [];
+            if (payload.eventType === 'INSERT' && payload.new && !cached.some((m) => m.id === incoming.id)) {
+              cached.push(incoming);
+              roomMessagesCache.set(incoming.room_id, cached);
               const rm = myRooms.find((r) => r.id === incoming.room_id);
               if (rm) {
-                await updateSingleRoomSummaryFromMessages(rm, data);
+                await updateSingleRoomSummaryFromMessages(rm, cached);
                 renderSidebarList();
               }
             }
@@ -4716,6 +4863,18 @@
         { event: '*', schema: 'public', table: 'profiles' },
         async (payload) => {
           const wasKnown = payload.new ? allProfiles.some((p) => p.id === payload.new.id) : true;
+          if (payload.eventType === 'UPDATE' && payload.new && wasKnown) {
+            // Обновляем профиль в памяти без тяжёлой перезагрузки таблиц!
+            const updatedProf = unpackProfile(payload.new);
+            if (updatedProf) {
+              allProfiles = allProfiles.map((p) => (p.id === updatedProf.id ? updatedProf : p));
+              updateActiveRoomHeader();
+              if (activeRoom) {
+                renderMessages(activeRoom.id);
+              }
+            }
+            return;
+          }
           await refreshDirectoryAndRooms();
           if (payload.eventType === 'INSERT' && payload.new && payload.new.id !== currentUser.id && !wasKnown) {
             const newPerson = unpackProfile(payload.new);
@@ -5239,10 +5398,9 @@
 
   function applyV16BubbleUpgrades() {
     if (!messagesViewport) return;
-    const bubbles = Array.from(messagesViewport.querySelectorAll('.msg-bubble'));
+    const bubbles = Array.from(messagesViewport.querySelectorAll('.msg-bubble:not([data-v16-bound])'));
 
     bubbles.forEach((bubble) => {
-      if (bubble.dataset.v16Bound) return;
       bubble.dataset.v16Bound = '1';
 
       const hasMedia = bubble.querySelector('img, video, .voice-player, .file-card, .call-log-card, .msg-reply-quote');
@@ -5527,8 +5685,7 @@
 
   function renderInteractivePollsInChat() {
     if (!messagesViewport) return;
-    Array.from(messagesViewport.querySelectorAll('.msg-bubble')).forEach((bubble) => {
-      if (bubble.dataset.pollRendered) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-bubble:not([data-poll-rendered])')).forEach((bubble) => {
       const rawText = bubble.textContent || '';
       if (!rawText.includes('📊 ОПРОС:')) return;
       bubble.dataset.pollRendered = '1';
@@ -5793,8 +5950,7 @@
   // Отрисовка спойлеров ||...||, интерактивных чек-листов и карточек геолокации в ленте
   function renderV18RichMessages() {
     if (!messagesViewport) return;
-    Array.from(messagesViewport.querySelectorAll('.msg-bubble')).forEach((bubble) => {
-      if (bubble.dataset.v18Processed) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-bubble:not([data-v18-processed])')).forEach((bubble) => {
       const raw = bubble.textContent || '';
 
       // А) Интерактивный чек-лист
@@ -6415,7 +6571,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=37').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=38').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
