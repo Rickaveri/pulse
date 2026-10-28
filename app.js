@@ -1166,6 +1166,92 @@
     return 'Сообщение';
   }
 
+
+  function getPeerReadTimestampForRoom(room, msgs) {
+    if (!room || !currentUser) return 0;
+    const dk = room.direct_key || '';
+    if (dk.startsWith('saved_')) return Date.now() + 86400000;
+
+    let bestTs = peerReadByRoom.get(room.id) || 0;
+
+    // Проверяем read_receipts у собеседника(ов) в профилях
+    if (!room.is_group && dk.includes('_')) {
+      const peerId = dk.split('_').find((id) => id && id !== currentUser.id);
+      const peer = allProfiles.find((p) => p.id === peerId);
+      if (peer && peer.read_receipts && peer.read_receipts[room.id]) {
+        bestTs = Math.max(bestTs, Number(peer.read_receipts[room.id]) || 0);
+      }
+    } else if (room.is_group && dk.startsWith('grp|')) {
+      const memberIds = (dk.split('|')[1] || '').split(',').filter((id) => id && id !== currentUser.id);
+      memberIds.forEach((uid) => {
+        const p = allProfiles.find((pr) => pr.id === uid);
+        if (p && p.read_receipts && p.read_receipts[room.id]) {
+          bestTs = Math.max(bestTs, Number(p.read_receipts[room.id]) || 0);
+        }
+      });
+    }
+
+    // Если собеседник прислал любое сообщение или реакцию позже — значит все сообщения до этого момента точно прочитаны
+    const list = msgs || roomMessagesCache.get(room.id) || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m && m.sender_id && m.sender_id !== currentUser.id && m.created_at) {
+        const t = new Date(m.created_at).getTime();
+        if (t > bestTs) bestTs = t;
+        break;
+      }
+    }
+    return bestTs;
+  }
+
+  let lastPublishedReadByRoom = new Map();
+  async function publishReadReceiptForRoom(roomId) {
+    if (!roomId || !currentUser || !supabaseClient) return;
+    const nowTs = Date.now();
+    const prevPub = lastPublishedReadByRoom.get(roomId) || 0;
+    if (nowTs - prevPub < 2500) return;
+    lastPublishedReadByRoom.set(roomId, nowTs);
+
+    if (!currentUser.read_receipts || typeof currentUser.read_receipts !== 'object') {
+      currentUser.read_receipts = {};
+    }
+    currentUser.read_receipts[roomId] = nowTs;
+
+    // 1) Мгновенный сигнал собеседнику через Realtime-канал (0 мс)
+    if (realtimeChannel) {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'room-read',
+        payload: {
+          room_id: roomId,
+          user_id: currentUser.id,
+          read_ts: nowTs
+        }
+      }).catch(() => {});
+    }
+
+    // 2) Сохранение метки прочтения в профиле Supabase (чтобы статус сохранялся после перезагрузки)
+    try {
+      const rrEntries = Object.entries(currentUser.read_receipts)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, 25);
+      currentUser.read_receipts = Object.fromEntries(rrEntries);
+      const packed = packProfileMeta({
+        color: currentUser.color,
+        username: currentUser.username,
+        phone: currentUser.phone,
+        avatar_url: currentUser.avatar_url,
+        bio: currentUser.bio,
+        push_subs: currentUser.push_subs,
+        read_receipts: currentUser.read_receipts
+      });
+      await supabaseClient
+        .from('profiles')
+        .update({ avatar_color: packed, last_seen: new Date().toISOString() })
+        .eq('id', currentUser.id);
+    } catch (e) {}
+  }
+
   function formatShortRoomTime(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -1194,11 +1280,17 @@
     }
     const lastMsg = visible[visible.length - 1];
     const rawPreview = await extractMessagePreviewText(lastMsg, room);
-    const prefix = lastMsg.sender_id === currentUser.id ? 'Вы: ' : '';
+    const isLastMine = lastMsg.sender_id === currentUser.id;
+    const msgTs = new Date(lastMsg.created_at).getTime();
+    const peerReadTs = isLastMine ? getPeerReadTimestampForRoom(room, visible) : 0;
+    const isLastRead = isLastMine && peerReadTs >= (msgTs - 1500);
+    const prefix = isLastMine ? 'Вы: ' : '';
     roomSummaryMap.set(room.id, {
       preview: `${prefix}${rawPreview}`,
       timeStr: formatShortRoomTime(lastMsg.created_at),
-      timestamp: new Date(lastMsg.created_at).getTime()
+      timestamp: msgTs,
+      isLastMine,
+      isLastRead
     });
   }
 
@@ -1566,6 +1658,8 @@
   }
 
   // 5. Упаковка и распаковка профиля
+  const peerReadByRoom = new Map();
+
   function packProfileMeta(meta) {
     return JSON.stringify({
       c: meta.color || '#6366f1',
@@ -1573,7 +1667,8 @@
       p: normalizePhone(meta.phone || ''),
       a: meta.avatar_url || '',
       b: (meta.bio || '').trim(),
-      ps: meta.push_subs || (currentUser && currentUser.push_subs) || []
+      ps: meta.push_subs || (currentUser && currentUser.push_subs) || [],
+      rr: meta.read_receipts || (currentUser && currentUser.read_receipts) || {}
     });
   }
 
@@ -1594,6 +1689,7 @@
           avatar_url: parsed.a || '',
           bio: parsed.b || '',
           push_subs: Array.isArray(parsed.ps) ? parsed.ps : [],
+          read_receipts: (parsed.rr && typeof parsed.rr === 'object') ? parsed.rr : {},
           color: parsed.c || '#6366f1',
           last_seen: rawProfile.last_seen || null
         };
@@ -2250,7 +2346,7 @@
             ${timeLabel ? `<span class="chat-item-time">${escapeHtml(timeLabel)}</span>` : ''}
           </div>
           <div class="chat-item-bottom">
-            <div class="chat-item-sub ${pres.isTyping ? 'typing' : draft ? 'draft' : ''}">${escapeHtml(subLine)}</div>
+            <div class="chat-item-sub ${pres.isTyping ? 'typing' : draft ? 'draft' : ''}">${(!pres.isTyping && !draft && summary && summary.isLastMine) ? `<span class="sidebar-read-tick ${summary.isLastRead ? 'is-read' : ''}">${summary.isLastRead ? '✓✓' : '✓'}</span> ` : ''}${escapeHtml(subLine)}</div>
             ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
           </div>
         `;
@@ -2453,6 +2549,7 @@
     if (chatSearchInput) chatSearchInput.value = '';
 
     setLastReadTimestamp(room.id, Date.now());
+    publishReadReceiptForRoom(room.id);
     if (unreadCounts.has(room.id)) {
       unreadCounts.delete(room.id);
       updateAppIconBadge();
@@ -2989,9 +3086,18 @@
       meta.appendChild(timeSpan);
 
       if (isMine) {
+        const peerReadTs = getPeerReadTimestampForRoom(roomSnapshot, actualMessages);
+        const msgTimeMs = new Date(msg.created_at).getTime();
+        const isReadByPeer = !msg._optimistic && peerReadTs >= (msgTimeMs - 1500);
         const ticks = document.createElement('span');
-        ticks.className = 'read-ticks';
-        ticks.textContent = msg._optimistic ? '✓' : '✓✓';
+        ticks.className = `read-ticks ${isReadByPeer ? 'is-read' : 'is-sent'}`;
+        ticks.dataset.msgTs = String(msgTimeMs);
+        ticks.textContent = msg._optimistic ? '⏳' : isReadByPeer ? '✓✓' : '✓';
+        ticks.title = msg._optimistic
+          ? 'Отправляется...'
+          : isReadByPeer
+          ? 'Прочитано собеседником'
+          : 'Доставлено (ожидает прочтения)';
         meta.appendChild(ticks);
       }
 
@@ -3108,6 +3214,40 @@
 
       messagesViewport.appendChild(row);
     });
+
+    // Фирменная живая капсула статуса прочтения под последним сообщением (Pulse Seen Capsule v37)
+    if (filteredList.length > 0 && !activeChatFilterQuery) {
+      const lastEntry = filteredList[filteredList.length - 1];
+      if (lastEntry && lastEntry.msg && lastEntry.msg.sender_id === currentUser.id) {
+        const peerReadTs = getPeerReadTimestampForRoom(roomSnapshot, actualMessages);
+        const lastMsgTs = new Date(lastEntry.msg.created_at).getTime();
+        const isSeen = !lastEntry.msg._optimistic && peerReadTs >= (lastMsgTs - 1500);
+        const pres = getRoomPresentation(roomSnapshot);
+        const peerNameStr = pres.peer ? pres.peer.display_name : 'участниками';
+        const seenTimeLabel = isSeen && peerReadTs > 0
+          ? new Date(peerReadTs).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+          : '';
+
+        const seenCapsule = document.createElement('div');
+        seenCapsule.id = 'pulseLiveSeenCapsule';
+        seenCapsule.className = `pulse-seen-capsule ${isSeen ? 'seen-active' : 'sent-waiting'}`;
+        if (lastEntry.msg._optimistic) {
+          seenCapsule.innerHTML = `<span class="seen-dot-icon">⏳</span><span>Отправляется...</span>`;
+        } else if (isSeen) {
+          const initial = escapeHtml((peerNameStr || 'П').slice(0, 1).toUpperCase());
+          const bgCol = (pres.peer && pres.peer.color) || 'var(--accent)';
+          seenCapsule.innerHTML = `
+            <span class="seen-mini-avatar" style="background:${bgCol};">${initial}</span>
+            <span class="seen-status-text">👁️ Прочитано • <strong>${escapeHtml(peerNameStr)}</strong>${seenTimeLabel ? ` в ${seenTimeLabel}` : ''}</span>
+          `;
+        } else {
+          seenCapsule.innerHTML = `<span class="seen-dot-icon">✓</span><span>Доставлено • ждёт прочтения</span>`;
+        }
+        messagesViewport.appendChild(seenCapsule);
+      } else if (document.visibilityState === 'visible') {
+        publishReadReceiptForRoom(roomSnapshot.id);
+      }
+    }
 
     if (!activeChatFilterQuery) {
       messagesViewport.scrollTop = messagesViewport.scrollHeight;
@@ -4491,6 +4631,24 @@
         Object.keys(state).forEach((uid) => onlineUserIds.add(uid));
         renderSidebarList();
         updateActiveRoomHeader();
+      })
+      .on('broadcast', { event: 'room-read' }, ({ payload }) => {
+        if (!payload || !payload.room_id || payload.user_id === currentUser.id) return;
+        const ts = Number(payload.read_ts) || Date.now();
+        peerReadByRoom.set(payload.room_id, ts);
+        const prof = allProfiles.find((p) => p.id === payload.user_id);
+        if (prof) {
+          if (!prof.read_receipts) prof.read_receipts = {};
+          prof.read_receipts[payload.room_id] = ts;
+        }
+        const rm = myRooms.find((r) => r.id === payload.room_id);
+        if (rm) {
+          const cached = roomMessagesCache.get(rm.id) || [];
+          updateSingleRoomSummaryFromMessages(rm, cached).then(() => renderSidebarList()).catch(() => {});
+        }
+        if (activeRoom && activeRoom.id === payload.room_id) {
+          renderMessages(activeRoom.id);
+        }
       })
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (!payload || payload.user_id === currentUser.id) return;
@@ -6257,7 +6415,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=36').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=37').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
