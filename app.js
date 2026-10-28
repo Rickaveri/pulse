@@ -2552,7 +2552,19 @@
     if (newRoom) await selectRoom(newRoom);
   });
 
-  // 10. Выбор комнаты, сохранение черновика и МГНОВЕННОЕ отображение без мелькания
+  // 10. Выбор комнаты, сохранение черновика и МГНОВЕННОЕ открытие сразу на последнем сообщении (v39)
+  let lastRoomOpenTs = 0;
+
+  function pinChatToBottomInstant() {
+    if (!messagesViewport) return;
+    messagesViewport.scrollTop = messagesViewport.scrollHeight + 20000;
+    requestAnimationFrame(() => {
+      if (messagesViewport) {
+        messagesViewport.scrollTop = messagesViewport.scrollHeight + 20000;
+      }
+    });
+  }
+
   async function selectRoom(room) {
     if (activeRoom && !editingMsg) {
       setRoomDraft(activeRoom.id, messageInput.value);
@@ -2560,6 +2572,7 @@
 
     activeRoom = room;
     currentSelectingRoomId = room.id;
+    lastRoomOpenTs = Date.now();
     activeChatFilterQuery = '';
     if (chatSearchBar) chatSearchBar.classList.add('hidden');
     if (chatSearchInput) chatSearchInput.value = '';
@@ -2579,23 +2592,25 @@
     if (scrollBottomBtn) scrollBottomBtn.classList.add('hidden');
     if (pinnedMsgBar) pinnedMsgBar.classList.add('hidden');
 
-    const cachedMsgs = roomMessagesCache.get(room.id);
-    if (cachedMsgs) {
-      roomMessages = cachedMsgs;
-      await renderMessages(room.id);
-    } else {
-      messagesViewport.innerHTML = '';
-      messagesViewport.dataset.renderedRoomId = '';
-      roomMessages = [];
-    }
-
+    // СНАЧАЛА делаем контейнер чата видимым, чтобы scrollHeight имел реальную высоту, а не 0!
     emptyChatState.classList.add('hidden');
     activeChatView.classList.remove('hidden');
     appShell.classList.add('chat-active');
     renderSidebarList();
     syncViewportHeight();
 
-    await loadMessages(room.id);
+    const cachedMsgs = roomMessagesCache.get(room.id);
+    if (cachedMsgs) {
+      roomMessages = cachedMsgs;
+      await renderMessages(room.id, true);
+      pinChatToBottomInstant();
+    } else {
+      messagesViewport.innerHTML = '';
+      messagesViewport.dataset.renderedRoomId = '';
+      roomMessages = [];
+    }
+
+    await loadMessages(room.id, true);
   }
 
   function updateActiveRoomHeader() {
@@ -2740,7 +2755,7 @@
     await renderMessages(activeRoom.id);
   });
 
-  async function loadMessages(roomId) {
+  async function loadMessages(roomId, forceScrollBottom = false) {
     const { data: descMsgs, error } = await supabaseClient
       .from('messages')
       .select('*')
@@ -2756,14 +2771,16 @@
     const targetRoomObj = myRooms.find((r) => r.id === roomId);
     if (targetRoomObj) {
       await updateSingleRoomSummaryFromMessages(targetRoomObj, fetched);
-      renderSidebarList();
+      if (!appShell.classList.contains('chat-active')) {
+        renderSidebarList();
+      }
     }
 
     if (!activeRoom || activeRoom.id !== roomId || currentSelectingRoomId !== roomId) return;
 
     roomMessages = fetched;
     setLastReadTimestamp(roomId, Date.now());
-    await renderMessages(roomId);
+    await renderMessages(roomId, forceScrollBottom);
   }
 
   function formatDateSeparator(dateStr) {
@@ -2821,7 +2838,7 @@
     });
   }
 
-  async function renderMessages(targetRoomId) {
+  async function renderMessages(targetRoomId, forceScrollBottom = false) {
     if (!activeRoom) return;
     const roomSnapshot = activeRoom;
     if (targetRoomId && roomSnapshot.id !== targetRoomId) return;
@@ -2900,7 +2917,12 @@
 
     const distFromBottomBefore =
       messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
-    const wasNearBottom = distFromBottomBefore < 140 || messagesViewport.dataset.renderedRoomId !== roomSnapshot.id;
+    const isRecentlyOpenedRoom = (Date.now() - lastRoomOpenTs) < 2600;
+    const wasNearBottom =
+      Boolean(forceScrollBottom) ||
+      isRecentlyOpenedRoom ||
+      distFromBottomBefore < 220 ||
+      messagesViewport.dataset.renderedRoomId !== roomSnapshot.id;
 
     if (filteredList.length === 0) {
       messagesViewport.innerHTML = '';
@@ -3063,8 +3085,16 @@
         if (kind === 'image') {
           const img = document.createElement('img');
           img.className = 'msg-photo msg-image';
+          img.decoding = 'async';
           img.src = msg.media_url;
           img.alt = 'Фото';
+          img.addEventListener('load', () => {
+            if (!messagesViewport) return;
+            const d = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+            if ((Date.now() - lastRoomOpenTs) < 4000 || d < 360) {
+              pinChatToBottomInstant();
+            }
+          }, { once: true });
           img.addEventListener('click', (ev) => {
             ev.stopPropagation();
             lightboxImg.src = msg.media_url;
@@ -3080,6 +3110,13 @@
           vid.loop = true;
           vid.muted = false;
           vid.preload = 'metadata';
+          vid.addEventListener('loadedmetadata', () => {
+            if (!messagesViewport) return;
+            const d = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+            if ((Date.now() - lastRoomOpenTs) < 4000 || d < 360) {
+              pinChatToBottomInstant();
+            }
+          }, { once: true });
 
           const badge = document.createElement('div');
           badge.className = 'video-note-badge circle-play-badge';
@@ -3352,7 +3389,11 @@
     }
 
     if (!activeChatFilterQuery && wasNearBottom) {
-      messagesViewport.scrollTop = messagesViewport.scrollHeight;
+      pinChatToBottomInstant();
+      if (forceScrollBottom || isRecentlyOpenedRoom) {
+        setTimeout(pinChatToBottomInstant, 50);
+        setTimeout(pinChatToBottomInstant, 180);
+      }
     }
   }
 
@@ -3930,7 +3971,7 @@
         let contentType = file.type || 'application/octet-stream';
 
         if (isImg) {
-          uploadBlob = await compressImage(file, 1280, 0.84);
+          uploadBlob = await compressImage(file, 1080, 0.80);
           ext = 'jpg';
           contentType = 'image/jpeg';
         }
@@ -4057,7 +4098,7 @@
       const stream = isVideo
         ? await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-            video: { facingMode: cameraFacingMode, width: { ideal: 480 }, height: { ideal: 480 } }
+            video: { facingMode: cameraFacingMode, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
           })
         : await acquireVoiceStreamOnce();
 
@@ -4103,9 +4144,19 @@
       (m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)
     );
 
-    const recorder = supportedMime
-      ? new MediaRecorder(stream, { mimeType: supportedMime })
-      : new MediaRecorder(stream);
+    const recOpts = supportedMime ? { mimeType: supportedMime } : {};
+    if (isVideo) {
+      recOpts.videoBitsPerSecond = 260000;
+      recOpts.audioBitsPerSecond = 32000;
+    } else {
+      recOpts.audioBitsPerSecond = 32000;
+    }
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream, recOpts);
+    } catch (e) {
+      recorder = supportedMime ? new MediaRecorder(stream, { mimeType: supportedMime }) : new MediaRecorder(stream);
+    }
 
     recorder.ondataavailable = (ev) => {
       if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
@@ -4197,7 +4248,7 @@
 
       const newStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: { facingMode: cameraFacingMode, width: { ideal: 480 }, height: { ideal: 480 } }
+        video: { facingMode: cameraFacingMode, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
       });
 
       activeMediaStream = newStream;
@@ -4903,7 +4954,7 @@
   }
 
   // 14. Сжатие изображений и утилиты
-  function compressImage(file, maxDim = 1280, quality = 0.84) {
+  function compressImage(file, maxDim = 1080, quality = 0.80) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (ev) => {
@@ -6571,7 +6622,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=38').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=39').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

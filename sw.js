@@ -1,14 +1,14 @@
-const CACHE_NAME = 'pulse-pwa-v38';
+const CACHE_NAME = 'pulse-pwa-v39';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=38',
-  './config.js?v=38',
-  './app.js?v=38',
-  './enhancements.js?v=38',
+  './styles.css?v=39',
+  './config.js?v=39',
+  './app.js?v=39',
+  './enhancements.js?v=39',
   './manifest.json'
 ];
 
@@ -19,10 +19,16 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
+const MEDIA_CACHE_NAME = 'pulse-media-cache-v1';
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      Promise.all(
+        keys
+          .filter((k) => k !== CACHE_NAME && k !== MEDIA_CACHE_NAME)
+          .map((k) => caches.delete(k))
+      )
     )
   );
   self.clients.claim();
@@ -30,6 +36,24 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  const reqUrl = event.request.url || '';
+
+  // Постоянный локальный кэш на телефоне для фото, голосовых и кружочков (0 байт повторного трафика из Supabase!)
+  if (reqUrl.includes('/storage/v1/object/public/chat-media/')) {
+    event.respondWith(
+      caches.open(MEDIA_CACHE_NAME).then(async (mediaCache) => {
+        const cachedResp = await mediaCache.match(event.request);
+        if (cachedResp) return cachedResp;
+        const netResp = await fetch(event.request);
+        if (netResp && netResp.ok) {
+          mediaCache.put(event.request, netResp.clone()).catch(() => {});
+        }
+        return netResp;
+      }).catch(() => fetch(event.request))
+    );
+    return;
+  }
+
   event.respondWith(
     fetch(event.request, { cache: 'no-store' })
       .then((res) => {
