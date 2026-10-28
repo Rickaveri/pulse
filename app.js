@@ -393,41 +393,99 @@
     };
   }
 
-  // 0. ТОЧНАЯ ВЫСОТА ЭКРАНА И КЛАВИАТУРЫ (по реальному visualViewport.height, чтобы строка ввода .composer всегда была внизу экрана! v43)
-  let lastAppliedVvHeight = 0;
-  let wasKeyboardOpenBefore = false;
+  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА НА IPHONE, ANDROID И СКЛАДНЫХ ЭКРАНАХ (v44)
+  let lastViewportWidth = window.innerWidth;
+  let maxClosedHeightForWidth = 0;
+  let lastKnownMessagesClientH = 0;
 
   function syncViewportHeight() {
     const vv = window.visualViewport;
+    const screenH = window.screen ? window.screen.height : window.innerHeight;
     const innerH = window.innerHeight;
     const vvH = vv && vv.height > 100 ? vv.height : innerH;
 
-    const isKeyboardOpen = vv ? (innerH - vvH > 105) : false;
-    const targetH = Math.round(vvH);
-    const targetTop = isKeyboardOpen && vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isIosStandalone = window.navigator.standalone === true ||
+      (isIOS && window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+    const isPortrait = innerH >= window.innerWidth;
+    const fullPhysicalH = (isIosStandalone && isPortrait && screenH > innerH && (screenH - innerH <= 90))
+      ? screenH
+      : innerH;
 
+    if (Math.abs(window.innerWidth - lastViewportWidth) > 40) {
+      lastViewportWidth = window.innerWidth;
+      maxClosedHeightForWidth = fullPhysicalH;
+    } else if (fullPhysicalH > maxClosedHeightForWidth) {
+      maxClosedHeightForWidth = fullPhysicalH;
+    }
+
+    const refFullH = Math.max(fullPhysicalH, maxClosedHeightForWidth);
+    const isKeyboardOpen = vv ? ((innerH - vvH > 100) || (refFullH - vvH > 120)) : false;
     document.body.classList.toggle('keyboard-open', isKeyboardOpen);
-    document.documentElement.style.height = `${targetH}px`;
-    document.body.style.height = `${targetH}px`;
 
     if (appShell) {
-      const prevH = lastAppliedVvHeight || targetH;
-      const heightDelta = prevH - targetH;
-      lastAppliedVvHeight = targetH;
+      const prevClientH = messagesViewport ? messagesViewport.clientHeight : 0;
+      const prevScrollTop = messagesViewport ? messagesViewport.scrollTop : 0;
+      const prevScrollH = messagesViewport ? messagesViewport.scrollHeight : 0;
+      const wasNearBottom = (prevScrollH - prevScrollTop - prevClientH) <= 105;
 
-      appShell.style.top = `${targetTop}px`;
-      appShell.style.bottom = '0px';
-      appShell.style.height = `${targetH}px`;
+      if (isKeyboardOpen && vv) {
+        const kbH = Math.round(vvH);
+        document.documentElement.style.height = `${kbH}px`;
+        document.body.style.height = `${kbH}px`;
+        appShell.style.bottom = 'auto';
+        appShell.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
+        appShell.style.height = `${kbH}px`;
+      } else {
+        document.documentElement.style.height = `${fullPhysicalH}px`;
+        document.body.style.height = `${fullPhysicalH}px`;
+        appShell.style.top = '0px';
+        appShell.style.bottom = 'auto';
+        appShell.style.height = `${fullPhysicalH}px`;
+      }
 
-      if (isKeyboardOpen && !wasKeyboardOpenBefore && heightDelta > 60 && messagesViewport) {
-        messagesViewport.scrollTop += heightDelta;
+      if (messagesViewport && activeRoom) {
+        const newClientH = messagesViewport.clientHeight;
+        const deltaH = (prevClientH > 0 && newClientH > 0) ? (prevClientH - newClientH) : 0;
+        lastKnownMessagesClientH = newClientH;
+
+        if (isKeyboardOpen) {
+          if (wasNearBottom) {
+            messagesViewport.scrollTop = messagesViewport.scrollHeight;
+          } else if (deltaH > 0) {
+            messagesViewport.scrollTop = prevScrollTop + deltaH;
+          }
+        } else if (deltaH < 0 && !wasNearBottom) {
+          messagesViewport.scrollTop = Math.max(0, prevScrollTop + deltaH);
+        }
       }
     }
-    wasKeyboardOpenBefore = isKeyboardOpen;
 
     if (window.scrollY !== 0 || window.scrollX !== 0) {
       window.scrollTo(0, 0);
     }
+  }
+
+  if (messagesViewport && 'ResizeObserver' in window) {
+    const vpResizeObs = new ResizeObserver(() => {
+      if (!messagesViewport || !activeRoom) return;
+      const curH = messagesViewport.clientHeight;
+      if (curH <= 0) return;
+      if (lastKnownMessagesClientH > 0 && curH !== lastKnownMessagesClientH) {
+        const delta = lastKnownMessagesClientH - curH;
+        const distFromBottom = messagesViewport.scrollHeight - messagesViewport.scrollTop - curH;
+        if (delta > 0) {
+          if (distFromBottom - delta <= 105) {
+            messagesViewport.scrollTop = messagesViewport.scrollHeight;
+          } else {
+            messagesViewport.scrollTop += delta;
+          }
+        }
+      }
+      lastKnownMessagesClientH = curH;
+    });
+    vpResizeObs.observe(messagesViewport);
   }
 
   if (window.visualViewport) {
@@ -436,8 +494,9 @@
   }
   window.addEventListener('resize', syncViewportHeight);
   messageInput.addEventListener('focus', () => {
-    setTimeout(syncViewportHeight, 60);
-    setTimeout(syncViewportHeight, 250);
+    setTimeout(syncViewportHeight, 50);
+    setTimeout(syncViewportHeight, 150);
+    setTimeout(syncViewportHeight, 300);
   });
   messageInput.addEventListener('blur', () => {
     setTimeout(() => {

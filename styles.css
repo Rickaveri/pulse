@@ -2965,16 +2965,7 @@ body.keyboard-open .composer {
 }
 
 
-/* Полоса перемотки и тайминга для видеокружочков и голосовых + фиксация макета без прыжков (v42) */
-html, body {
-  position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  overscroll-behavior: none;
-}
-
+/* Полоса перемотки и тайминга для видеокружочков и голосовых (v42–v44) */
 .voice-bars {
   cursor: pointer;
   padding: 6px 2px;
@@ -3031,27 +3022,10 @@ html, body {
   padding: 2px 7px !important;
 }
 
-
-/* Гарантированная видимость нижней панели ввода .composer и фиксированные размеры видеокружочков (v43) */
-.app-shell {
-  height: 100dvh;
-  max-height: 100dvh;
-}
-
 .chat-main {
   height: 100%;
   max-height: 100%;
   overflow: hidden;
-}
-
-.composer {
-  flex-shrink: 0 !important;
-  padding-bottom: max(10px, env(safe-area-inset-bottom)) !important;
-  z-index: 30;
-}
-
-body.keyboard-open .composer {
-  padding-bottom: 6px !important;
 }
 
 .video-note-wrap {

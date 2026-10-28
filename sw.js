@@ -1,14 +1,14 @@
-const CACHE_NAME = 'pulse-pwa-v43';
+const CACHE_NAME = 'pulse-pwa-v44';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=43',
-  './config.js?v=43',
-  './app.js?v=43',
-  './enhancements.js?v=43',
+  './styles.css?v=44',
+  './config.js?v=44',
+  './app.js?v=44',
+  './enhancements.js?v=44',
   './manifest.json'
 ];
 
