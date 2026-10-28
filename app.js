@@ -393,28 +393,22 @@
     };
   }
 
-  // 0. СТАБИЛЬНАЯ ФИКСАЦИЯ ЭКРАНА И КЛАВИАТУРЫ БЕЗ СЪЕЗЖАНИЯ ПОЛОСЫ ВВОДА И СПИСКА СООБЩЕНИЙ (v42)
+  // 0. ТОЧНАЯ ВЫСОТА ЭКРАНА И КЛАВИАТУРЫ (по реальному visualViewport.height, чтобы строка ввода .composer всегда была внизу экрана! v43)
   let lastAppliedVvHeight = 0;
   let wasKeyboardOpenBefore = false;
 
   function syncViewportHeight() {
     const vv = window.visualViewport;
-    const screenH = window.screen ? window.screen.height : window.innerHeight;
     const innerH = window.innerHeight;
-    const vvH = vv ? vv.height : innerH;
-
-    const isStandalone = window.navigator.standalone === true ||
-      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
-    const isPortrait = innerH >= window.innerWidth;
-    const fullPhysicalH = (isStandalone && isPortrait && screenH > innerH && (screenH - innerH <= 90))
-      ? screenH
-      : innerH;
+    const vvH = vv && vv.height > 100 ? vv.height : innerH;
 
     const isKeyboardOpen = vv ? (innerH - vvH > 105) : false;
-    const targetH = isKeyboardOpen && vv ? Math.round(vvH) : Math.round(fullPhysicalH);
+    const targetH = Math.round(vvH);
     const targetTop = isKeyboardOpen && vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
 
     document.body.classList.toggle('keyboard-open', isKeyboardOpen);
+    document.documentElement.style.height = `${targetH}px`;
+    document.body.style.height = `${targetH}px`;
 
     if (appShell) {
       const prevH = lastAppliedVvHeight || targetH;
@@ -422,10 +416,9 @@
       lastAppliedVvHeight = targetH;
 
       appShell.style.top = `${targetTop}px`;
-      appShell.style.bottom = 'auto';
+      appShell.style.bottom = '0px';
       appShell.style.height = `${targetH}px`;
 
-      // Сдвигаем скролл ровно на высоту открывшейся клавиатуры ТОЛЬКО в момент её открытия, чтобы сообщение перед глазами не уезжало!
       if (isKeyboardOpen && !wasKeyboardOpenBefore && heightDelta > 60 && messagesViewport) {
         messagesViewport.scrollTop += heightDelta;
       }
@@ -1360,6 +1353,7 @@
 
     updateAppIconBadge();
     renderSidebarList();
+    saveBootSnapshotToStorage();
   }
 
   const notifiedMsgIds = new Set();
@@ -1929,9 +1923,67 @@
     }
   });
 
+
+  const BOOT_CACHE_KEY = 'pulse_boot_cache_v43';
+
+  function saveBootSnapshotToStorage() {
+    if (!currentUser) return;
+    try {
+      const summariesObj = {};
+      roomSummaryMap.forEach((val, key) => { summariesObj[key] = val; });
+      const snap = {
+        user: currentUser,
+        profiles: allProfiles.slice(0, 120),
+        rooms: myRooms.slice(0, 80),
+        summaries: summariesObj
+      };
+      localStorage.setItem(BOOT_CACHE_KEY, JSON.stringify(snap));
+    } catch (e) {}
+  }
+
+  function tryInstantRestoreFromBootCache() {
+    try {
+      const raw = localStorage.getItem(BOOT_CACHE_KEY);
+      if (!raw) return false;
+      const snap = JSON.parse(raw);
+      if (!snap || !snap.user || !snap.user.id) return false;
+      currentUser = snap.user;
+      allProfiles = Array.isArray(snap.profiles) ? snap.profiles : [];
+      myRooms = Array.isArray(snap.rooms) ? snap.rooms : [];
+      if (snap.summaries && typeof snap.summaries === 'object') {
+        Object.entries(snap.summaries).forEach(([k, v]) => roomSummaryMap.set(k, v));
+      }
+      onlineUserIds.add(currentUser.id);
+      updateMyHeaderUI();
+      updateSmartActionButtonUI();
+      updatePushPermissionUI();
+      authScreen.classList.add('hidden');
+      appShell.classList.remove('hidden');
+      syncViewportHeight();
+      renderSidebarList();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Если в браузере уже есть сохранённая сессия — мгновенно скрываем экран входа до первого кадра!
+  if (localStorage.getItem(BOOT_CACHE_KEY)) {
+    authScreen.classList.add('hidden');
+    appShell.classList.remove('hidden');
+  }
+
   async function bootSession() {
+    // Мгновенно отрисовываем сохранённый список чатов за 0 мс без мелькания окна входа и без перепрыгивания чатов!
+    const restoredInstantly = tryInstantRestoreFromBootCache();
+
     const { data: sessionData } = await supabaseClient.auth.getSession();
-    if (!sessionData || !sessionData.session) return;
+    if (!sessionData || !sessionData.session) {
+      localStorage.removeItem(BOOT_CACHE_KEY);
+      appShell.classList.add('hidden');
+      authScreen.classList.remove('hidden');
+      return;
+    }
 
     const user = sessionData.session.user;
     let { data: rawProf } = await supabaseClient
@@ -1965,10 +2017,11 @@
         .single();
       rawProf = inserted || { id: user.id, email: user.email, display_name: metaName, avatar_color: packed };
     } else {
-      await supabaseClient
+      supabaseClient
         .from('profiles')
         .update({ last_seen: new Date().toISOString() })
-        .eq('id', user.id);
+        .eq('id', user.id)
+        .then(() => {}).catch(() => {});
     }
 
     currentUser = unpackProfile(rawProf);
@@ -1982,12 +2035,13 @@
     syncViewportHeight();
 
     await ensureSavedMessagesRoom();
-    await refreshDirectoryAndRooms();
+    // ВАЖНО: сначала загружаем комнаты БЕЗ преждевременной отрисовки пустого списка, затем загружаем сообщения и рисуем список чатов ОДИН раз уже отсортированным!
+    await refreshDirectoryAndRooms(true);
     await preloadAllRoomsMessages();
+    saveBootSnapshotToStorage();
     subscribeRealtime();
     registerAndSaveWebPushSubscription();
 
-    // Seed existing message IDs so we only notify on brand-new messages
     roomMessagesCache.forEach((msgs) => {
       (msgs || []).forEach((m) => { if (m && m.id) notifiedMsgIds.add(m.id); });
     });
@@ -1995,13 +2049,11 @@
     let lastPolledIso = new Date(Date.now() - 15000).toISOString();
     let pollTick = 0;
     setInterval(async () => {
-      if (!currentUser || !supabaseClient) return;
+      if (!currentUser || !supabaseClient || document.hidden) return;
       try {
         pollTick += 1;
-        const prevRoomCount = myRooms.length;
-        // Обновляем список комнат раз в 3 цикла (~9 сек), а новые сообщения проверяем легковесным дельта-запросом
-        if (pollTick % 3 === 0 || myRooms.length === 0) {
-          await refreshDirectoryAndRooms();
+        if (myRooms.length === 0) {
+          await refreshDirectoryAndRooms(true);
         }
         if (myRooms.length === 0) return;
         const rIds = myRooms.map((r) => r.id);
@@ -2206,7 +2258,8 @@
       cachedAudioStream.getTracks().forEach((t) => t.stop());
       cachedAudioStream = null;
     }
-    if (supabaseClient) await supabaseClient.auth.signOut();
+    if (supabaseClient) localStorage.removeItem(BOOT_CACHE_KEY);
+    await supabaseClient.auth.signOut();
     window.location.reload();
   });
 
@@ -2234,7 +2287,7 @@
     return room.created_by === currentUser.id;
   }
 
-  async function refreshDirectoryAndRooms() {
+  async function refreshDirectoryAndRooms(skipRender = false) {
     const [{ data: rawProfiles }, { data: rooms }] = await Promise.all([
       supabaseClient.from('profiles').select('*').order('display_name', { ascending: true }),
       supabaseClient.from('rooms').select('*').order('created_at', { ascending: true })
@@ -2251,7 +2304,10 @@
       }
     }
 
-    renderSidebarList();
+    if (!skipRender) {
+      renderSidebarList();
+    }
+    saveBootSnapshotToStorage();
   }
 
   function getPeerForDirectRoom(room) {
@@ -2654,7 +2710,7 @@
       roomMessages = [];
     }
 
-    await loadMessages(room.id, !cachedMsgs || cachedMsgs.length === 0);
+    await loadMessages(room.id, true);
   }
 
   function updateActiveRoomHeader() {
@@ -3187,7 +3243,9 @@
           const circleWrap = document.createElement('div');
           circleWrap.className = 'video-note-wrap video-circle-msg';
           const vid = document.createElement('video');
-          vid.src = msg.media_url;
+          vid.src = (msg.media_url && !msg.media_url.includes('#') && !msg.media_url.startsWith('blob:'))
+            ? `${msg.media_url}#t=0.001`
+            : msg.media_url;
           vid.playsInline = true;
           vid.loop = false;
           vid.muted = false;
@@ -5873,16 +5931,7 @@
         }
       };
 
-      bubble.addEventListener('dblclick', triggerHeartLike);
-      bubble.addEventListener('touchend', (e) => {
-        const now = Date.now();
-        if (now - lastTapTs < 280 && now - lastTapTs > 40) {
-          triggerHeartLike(e);
-          lastTapTs = 0;
-        } else {
-          lastTapTs = now;
-        }
-      }, { passive: true });
+      // Двойной тап обрабатывается единым модулем с анимацией сердца в enhancements.js
     });
   }
 
@@ -6987,7 +7036,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=42').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=43').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

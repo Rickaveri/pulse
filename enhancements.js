@@ -594,23 +594,7 @@
     bubbles.forEach((bubble) => {
       bubble.setAttribute("data-v36-ready", "1");
 
-      // 1) Кнопка скорости 1x / 1.5x / 2x рядом с голосовым сообщением
-      const audioEl = bubble.querySelector("audio");
-      if (audioEl && !bubble.querySelector(".audio-speed-pill")) {
-        audioEl.playbackRate = currentVoiceSpeed;
-        const speedPill = document.createElement("button");
-        speedPill.type = "button";
-        speedPill.className = "audio-speed-pill";
-        speedPill.textContent = currentVoiceSpeed + "x";
-        speedPill.title = "Скорость воспроизведения";
-        speedPill.addEventListener("click", (e) => {
-          e.stopPropagation();
-          currentVoiceSpeed = currentVoiceSpeed === 1.0 ? 1.5 : currentVoiceSpeed === 1.5 ? 2.0 : 1.0;
-          document.querySelectorAll(".msg-bubble audio").forEach((a) => { a.playbackRate = currentVoiceSpeed; });
-          document.querySelectorAll(".audio-speed-pill").forEach((p) => { p.textContent = currentVoiceSpeed + "x"; });
-        });
-        audioEl.insertAdjacentElement("afterend", speedPill);
-      }
+      // Кнопка скорости 1x/1.5x/2x уже встроена напрямую в плееры голосовых и кружочков
 
       // 2) Автоматическая карточка сайта (Rich Link Preview) для внешних ссылок
       const linkEl = bubble.querySelector("a[href^=\"http\"]");
@@ -656,7 +640,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=42').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=43').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });
