@@ -2911,7 +2911,6 @@ body.keyboard-open .composer {
   font-size: 11.5px;
   line-height: 1.2;
   transition: all 0.25s cubic-bezier(0.2, 0.9, 0.3, 1);
-  animation: seenCapsuleFadeIn 0.25s ease-out;
 }
 
 .pulse-seen-capsule.sent-waiting {
@@ -2963,4 +2962,71 @@ body.keyboard-open .composer {
   .chat-item:active {
     background: var(--bg-hover) !important;
   }
+}
+
+
+/* Полоса перемотки и тайминга для видеокружочков и голосовых + фиксация макета без прыжков (v42) */
+html, body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.voice-bars {
+  cursor: pointer;
+  padding: 6px 2px;
+  touch-action: none;
+}
+
+.voice-duration {
+  min-width: 58px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+
+.circle-player-outer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.circle-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 196px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px);
+}
+
+.circle-scrub-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  touch-action: none;
+}
+
+.circle-scrub-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #38bdf8);
+  transition: width 0.08s linear;
+}
+
+.circle-speed-btn {
+  font-size: 11px !important;
+  padding: 2px 7px !important;
 }

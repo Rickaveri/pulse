@@ -393,7 +393,10 @@
     };
   }
 
-  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА В ВЕБ-ПРИЛОЖЕНИИ НА IPHONE
+  // 0. СТАБИЛЬНАЯ ФИКСАЦИЯ ЭКРАНА И КЛАВИАТУРЫ БЕЗ СЪЕЗЖАНИЯ ПОЛОСЫ ВВОДА И СПИСКА СООБЩЕНИЙ (v42)
+  let lastAppliedVvHeight = 0;
+  let wasKeyboardOpenBefore = false;
+
   function syncViewportHeight() {
     const vv = window.visualViewport;
     const screenH = window.screen ? window.screen.height : window.innerHeight;
@@ -407,30 +410,30 @@
       ? screenH
       : innerH;
 
-    const isKeyboardOpen = vv ? (innerH - vvH > 100) : false;
+    const isKeyboardOpen = vv ? (innerH - vvH > 105) : false;
+    const targetH = isKeyboardOpen && vv ? Math.round(vvH) : Math.round(fullPhysicalH);
+    const targetTop = isKeyboardOpen && vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+
     document.body.classList.toggle('keyboard-open', isKeyboardOpen);
 
     if (appShell) {
-      if (isKeyboardOpen && vv) {
-        document.documentElement.style.height = `${Math.round(vvH)}px`;
-        document.body.style.height = `${Math.round(vvH)}px`;
-        appShell.style.bottom = 'auto';
-        appShell.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
-        appShell.style.height = `${Math.round(vvH)}px`;
-      } else {
-        document.documentElement.style.height = `${fullPhysicalH}px`;
-        document.body.style.height = `${fullPhysicalH}px`;
-        appShell.style.top = '0px';
-        appShell.style.bottom = 'auto';
-        appShell.style.height = `${fullPhysicalH}px`;
+      const prevH = lastAppliedVvHeight || targetH;
+      const heightDelta = prevH - targetH;
+      lastAppliedVvHeight = targetH;
+
+      appShell.style.top = `${targetTop}px`;
+      appShell.style.bottom = 'auto';
+      appShell.style.height = `${targetH}px`;
+
+      // Сдвигаем скролл ровно на высоту открывшейся клавиатуры ТОЛЬКО в момент её открытия, чтобы сообщение перед глазами не уезжало!
+      if (isKeyboardOpen && !wasKeyboardOpenBefore && heightDelta > 60 && messagesViewport) {
+        messagesViewport.scrollTop += heightDelta;
       }
     }
+    wasKeyboardOpenBefore = isKeyboardOpen;
 
     if (window.scrollY !== 0 || window.scrollX !== 0) {
       window.scrollTo(0, 0);
-    }
-    if (isKeyboardOpen && messagesViewport) {
-      messagesViewport.scrollTop = messagesViewport.scrollHeight;
     }
   }
 
@@ -1303,8 +1306,10 @@
       .select('*')
       .in('room_id', roomIds)
       .order('created_at', { ascending: false })
-      .limit(250);
-    const data = descData ? [...descData].reverse() : null;
+      .limit(800);
+    const data = descData
+      ? [...descData].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      : null;
 
     if (error || !data) return;
 
@@ -2638,20 +2643,18 @@
     renderSidebarList();
     syncViewportHeight();
 
-    // Очищаем DOM предыдущего чата перед рендером
-    messagesViewport.innerHTML = '';
-    messagesViewport.dataset.renderedRoomId = '';
-
     const cachedMsgs = roomMessagesCache.get(room.id);
-    if (cachedMsgs && fullyLoadedRoomIds.has(room.id)) {
+    if (cachedMsgs && cachedMsgs.length > 0) {
       roomMessages = cachedMsgs;
       await renderMessages(room.id, true);
       pinChatToBottomInstant();
     } else {
+      messagesViewport.innerHTML = '';
+      messagesViewport.dataset.renderedRoomId = '';
       roomMessages = [];
     }
 
-    await loadMessages(room.id, true);
+    await loadMessages(room.id, !cachedMsgs || cachedMsgs.length === 0);
   }
 
   function updateActiveRoomHeader() {
@@ -2811,9 +2814,7 @@
     );
 
     const prevCached = roomMessagesCache.get(roomId) || [];
-    const wasAlreadyFull = fullyLoadedRoomIds.has(roomId);
     const isIdenticalToRendered =
-      wasAlreadyFull &&
       messagesViewport.dataset.renderedRoomId === roomId &&
       prevCached.length === fetched.length &&
       prevCached.every((m, idx) => m.id === fetched[idx].id && m.content === fetched[idx].content);
@@ -2979,12 +2980,12 @@
 
     const distFromBottomBefore =
       messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
-    const isRecentlyOpenedRoom = (Date.now() - lastRoomOpenTs) < 2600;
+    const isSwitchingRoomNow = messagesViewport.dataset.renderedRoomId !== roomSnapshot.id;
+    const isMediaPlayingInChat = Boolean(activePlayingMediaEl && !activePlayingMediaEl.paused);
     const wasNearBottom =
       Boolean(forceScrollBottom) ||
-      isRecentlyOpenedRoom ||
-      distFromBottomBefore < 220 ||
-      messagesViewport.dataset.renderedRoomId !== roomSnapshot.id;
+      isSwitchingRoomNow ||
+      (!isMediaPlayingInChat && !replyToMsg && !editingMsg && distFromBottomBefore < 95);
 
     if (filteredList.length === 0) {
       messagesViewport.innerHTML = '';
@@ -3039,8 +3040,7 @@
       messagesViewport.dataset.renderedRoomId = roomSnapshot.id;
     }
 
-    const oldCapsule = document.getElementById('pulseLiveSeenCapsule');
-    if (oldCapsule) oldCapsule.remove();
+    // Капсулу прочтения обновляем мягко на месте в конце функции без удаления/мигания
 
     const peerReadTsForAll = getPeerReadTimestampForRoom(roomSnapshot, actualMessages);
     let lastDateKey = '';
@@ -3170,8 +3170,7 @@
           img.alt = 'Фото';
           img.addEventListener('load', () => {
             if (!messagesViewport) return;
-            const d = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
-            if ((Date.now() - lastRoomOpenTs) < 4000 || d < 360) {
+            if ((Date.now() - lastRoomOpenTs) < 900) {
               pinChatToBottomInstant();
             }
           }, { once: true });
@@ -3182,6 +3181,9 @@
           });
           bubble.appendChild(img);
         } else if (kind === 'video_circle') {
+          const circleOuter = document.createElement('div');
+          circleOuter.className = 'circle-player-outer';
+
           const circleWrap = document.createElement('div');
           circleWrap.className = 'video-note-wrap video-circle-msg';
           const vid = document.createElement('video');
@@ -3190,42 +3192,120 @@
           vid.loop = false;
           vid.muted = false;
           vid.preload = 'metadata';
-          vid.addEventListener('loadedmetadata', () => {
-            if (!messagesViewport) return;
-            const d = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
-            if ((Date.now() - lastRoomOpenTs) < 4000 || d < 360) {
-              pinChatToBottomInstant();
-            }
-          }, { once: true });
 
+          let totalDurSec = Number(msg.media_duration) || 0;
           const badge = document.createElement('div');
           badge.className = 'video-note-badge circle-play-badge';
-          badge.textContent = '▶ Кружочек';
+          badge.textContent = totalDurSec > 0 ? `▶ ${formatSec(totalDurSec)}` : '▶ Кружочек';
+
+          // Интерактивная полоса перемотки и скорости под видеокружочком
+          const controlsRow = document.createElement('div');
+          controlsRow.className = 'circle-controls-row';
+          controlsRow.addEventListener('click', (ev) => ev.stopPropagation());
+
+          const scrubTrack = document.createElement('div');
+          scrubTrack.className = 'circle-scrub-track';
+          const scrubFill = document.createElement('div');
+          scrubFill.className = 'circle-scrub-fill';
+          scrubTrack.appendChild(scrubFill);
+
+          const speedBtn = document.createElement('button');
+          speedBtn.type = 'button';
+          speedBtn.className = 'voice-speed-btn circle-speed-btn';
+          speedBtn.textContent = '1x';
+          const cSpeeds = [1, 1.5, 2];
+          let cSpeedIdx = 0;
+          speedBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            triggerHaptic('light');
+            cSpeedIdx = (cSpeedIdx + 1) % cSpeeds.length;
+            vid.playbackRate = cSpeeds[cSpeedIdx];
+            speedBtn.textContent = `${cSpeeds[cSpeedIdx]}x`;
+          });
+
+          const seekCircleByClientX = (clientX) => {
+            const rect = scrubTrack.getBoundingClientRect();
+            if (!rect.width) return;
+            const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const d = (isFinite(vid.duration) && vid.duration > 0) ? vid.duration : totalDurSec;
+            if (d > 0) {
+              try { vid.currentTime = ratio * d; } catch (e) {}
+              scrubFill.style.width = `${Math.round(ratio * 100)}%`;
+              const cur = Math.floor(ratio * d);
+              badge.textContent = `${vid.paused ? '▶' : '⏸'} ${formatSec(cur)} / ${formatSec(Math.round(d))}`;
+            }
+          };
+
+          scrubTrack.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            triggerHaptic('light');
+            seekCircleByClientX(ev.clientX);
+          });
+          scrubTrack.addEventListener('touchmove', (ev) => {
+            if (ev.touches && ev.touches[0]) {
+              seekCircleByClientX(ev.touches[0].clientX);
+            }
+          }, { passive: true });
+
+          vid.addEventListener('loadedmetadata', () => {
+            if (isFinite(vid.duration) && vid.duration > 0) {
+              totalDurSec = Math.round(vid.duration);
+              if (vid.paused) {
+                badge.textContent = `▶ ${formatSec(totalDurSec)}`;
+              }
+            }
+            if ((Date.now() - lastRoomOpenTs) < 900) {
+              pinChatToBottomInstant();
+            }
+          });
+
+          vid.addEventListener('timeupdate', () => {
+            const d = (isFinite(vid.duration) && vid.duration > 0) ? vid.duration : totalDurSec;
+            const cur = Math.floor(vid.currentTime || 0);
+            const ratio = d > 0 ? Math.min(1, (vid.currentTime || 0) / d) : 0;
+            scrubFill.style.width = `${Math.round(ratio * 100)}%`;
+            if (!vid.paused) {
+              badge.textContent = d > 0 ? `⏸ ${formatSec(cur)} / ${formatSec(Math.round(d))}` : `⏸ ${formatSec(cur)}`;
+            }
+          });
 
           vid.addEventListener('ended', () => {
             vid.pause();
+            if (activePlayingMediaEl === vid) activePlayingMediaEl = null;
             try { vid.currentTime = 0; } catch (e) {}
-            badge.textContent = '▶ Кружочек';
+            scrubFill.style.width = '0%';
+            badge.textContent = totalDurSec > 0 ? `▶ ${formatSec(totalDurSec)}` : '▶ Кружочек';
           });
 
           circleWrap.addEventListener('click', (ev) => {
             ev.stopPropagation();
             triggerHaptic('light');
             if (vid.paused || vid.ended) {
+              pauseOtherActiveMedia(vid);
               if (vid.ended) {
                 try { vid.currentTime = 0; } catch (e) {}
               }
+              vid.playbackRate = cSpeeds[cSpeedIdx];
               vid.play().catch(() => {});
-              badge.textContent = '⏸ Пауза';
+              const d = (isFinite(vid.duration) && vid.duration > 0) ? Math.round(vid.duration) : totalDurSec;
+              const cur = Math.floor(vid.currentTime || 0);
+              badge.textContent = d > 0 ? `⏸ ${formatSec(cur)} / ${formatSec(d)}` : '⏸ Пауза';
             } else {
               vid.pause();
-              badge.textContent = '▶ Кружочек';
+              if (activePlayingMediaEl === vid) activePlayingMediaEl = null;
+              const d = (isFinite(vid.duration) && vid.duration > 0) ? Math.round(vid.duration) : totalDurSec;
+              const cur = Math.floor(vid.currentTime || 0);
+              badge.textContent = d > 0 ? `▶ ${formatSec(cur)} / ${formatSec(d)}` : '▶ Пауза';
             }
           });
 
           circleWrap.appendChild(vid);
           circleWrap.appendChild(badge);
-          bubble.appendChild(circleWrap);
+          controlsRow.appendChild(scrubTrack);
+          controlsRow.appendChild(speedBtn);
+          circleOuter.appendChild(circleWrap);
+          circleOuter.appendChild(controlsRow);
+          bubble.appendChild(circleOuter);
         } else if (kind === 'voice') {
           const voiceCard = buildCustomVoicePlayer(msg.media_url, msg.media_duration);
           bubble.appendChild(voiceCard);
@@ -3444,7 +3524,8 @@
       });
     }
 
-    // Фирменная живая капсула статуса прочтения под последним сообщением (НЕ показываем в Избранном!)
+    // Мягкое обновление капсулы прочтения на месте БЕЗ пересоздания и мигания (v42)
+    let seenCapsule = document.getElementById('pulseLiveSeenCapsule');
     const isSavedRoomNow = (roomSnapshot.direct_key || '').startsWith('saved_');
     if (filteredList.length > 0 && !activeChatFilterQuery && !isSavedRoomNow) {
       const lastEntry = filteredList[filteredList.length - 1];
@@ -3457,34 +3538,43 @@
         const seenTimeLabel = isSeen && peerReadTs > 0
           ? new Date(peerReadTs).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
           : '';
+        const nextSeenKey = `${lastEntry.msg.id}:${lastEntry.msg._optimistic ? 'opt' : isSeen ? 'seen' : 'sent'}:${seenTimeLabel}`;
 
-        const seenCapsule = document.createElement('div');
-        seenCapsule.id = 'pulseLiveSeenCapsule';
-        seenCapsule.className = `pulse-seen-capsule ${isSeen ? 'seen-active' : 'sent-waiting'}`;
-        if (lastEntry.msg._optimistic) {
-          seenCapsule.innerHTML = `<span class="seen-dot-icon">⏳</span><span>Отправляется...</span>`;
-        } else if (isSeen) {
-          const initial = escapeHtml((peerNameStr || 'П').slice(0, 1).toUpperCase());
-          const bgCol = (pres.peer && pres.peer.color) || 'var(--accent)';
-          seenCapsule.innerHTML = `
-            <span class="seen-mini-avatar" style="background:${bgCol};">${initial}</span>
-            <span class="seen-status-text">👁️ Прочитано • <strong>${escapeHtml(peerNameStr)}</strong>${seenTimeLabel ? ` в ${seenTimeLabel}` : ''}</span>
-          `;
-        } else {
-          seenCapsule.innerHTML = `<span class="seen-dot-icon">✓</span><span>Доставлено • ждёт прочтения</span>`;
+        if (!seenCapsule) {
+          seenCapsule = document.createElement('div');
+          seenCapsule.id = 'pulseLiveSeenCapsule';
         }
-        messagesViewport.appendChild(seenCapsule);
-      } else if (document.visibilityState === 'visible') {
-        publishReadReceiptForRoom(roomSnapshot.id);
+        if (seenCapsule.dataset.seenKey !== nextSeenKey) {
+          seenCapsule.dataset.seenKey = nextSeenKey;
+          seenCapsule.className = `pulse-seen-capsule ${isSeen ? 'seen-active' : 'sent-waiting'}`;
+          if (lastEntry.msg._optimistic) {
+            seenCapsule.innerHTML = `<span class="seen-dot-icon">⏳</span><span>Отправляется...</span>`;
+          } else if (isSeen) {
+            const initial = escapeHtml((peerNameStr || 'П').slice(0, 1).toUpperCase());
+            const bgCol = (pres.peer && pres.peer.color) || 'var(--accent)';
+            seenCapsule.innerHTML = `
+              <span class="seen-mini-avatar" style="background:${bgCol};">${initial}</span>
+              <span class="seen-status-text">👁️ Прочитано • <strong>${escapeHtml(peerNameStr)}</strong>${seenTimeLabel ? ` в ${seenTimeLabel}` : ''}</span>
+            `;
+          } else {
+            seenCapsule.innerHTML = `<span class="seen-dot-icon">✓</span><span>Доставлено • ждёт прочтения</span>`;
+          }
+        }
+        if (seenCapsule.parentNode !== messagesViewport || messagesViewport.lastElementChild !== seenCapsule) {
+          messagesViewport.appendChild(seenCapsule);
+        }
+      } else {
+        if (seenCapsule) seenCapsule.remove();
+        if (document.visibilityState === 'visible') {
+          publishReadReceiptForRoom(roomSnapshot.id);
+        }
       }
+    } else if (seenCapsule) {
+      seenCapsule.remove();
     }
 
     if (!activeChatFilterQuery && wasNearBottom) {
       pinChatToBottomInstant();
-      if (forceScrollBottom || isRecentlyOpenedRoom) {
-        setTimeout(pinChatToBottomInstant, 50);
-        setTimeout(pinChatToBottomInstant, 180);
-      }
     }
   }
 
@@ -3742,6 +3832,14 @@
     await loadMessages(activeRoom.id);
   });
 
+  let activePlayingMediaEl = null;
+  function pauseOtherActiveMedia(newMediaEl) {
+    if (activePlayingMediaEl && activePlayingMediaEl !== newMediaEl) {
+      try { activePlayingMediaEl.pause(); } catch (e) {}
+    }
+    activePlayingMediaEl = newMediaEl;
+  }
+
   function buildCustomVoicePlayer(audioUrl, initialDuration) {
     const wrap = document.createElement('div');
     wrap.className = 'voice-player';
@@ -3750,6 +3848,8 @@
     const audio = new Audio(audioUrl);
     audio.preload = 'metadata';
 
+    let knownTotalSec = Number(initialDuration) || 0;
+
     const playBtn = document.createElement('button');
     playBtn.type = 'button';
     playBtn.className = 'voice-play-btn';
@@ -3757,6 +3857,7 @@
 
     const barsWrap = document.createElement('div');
     barsWrap.className = 'voice-wave voice-bars';
+    barsWrap.title = 'Нажмите или проведите пальцем для перемотки';
     const heights = [35, 65, 50, 85, 45, 95, 60, 75, 40, 88, 55, 70, 50, 80, 45, 60, 35, 50];
     const barEls = heights.map((h) => {
       const b = document.createElement('span');
@@ -3768,7 +3869,7 @@
 
     const durLabel = document.createElement('span');
     durLabel.className = 'voice-duration';
-    durLabel.textContent = initialDuration ? formatSec(initialDuration) : '0:00';
+    durLabel.textContent = knownTotalSec > 0 ? formatSec(knownTotalSec) : '0:00';
 
     const speedBtn = document.createElement('button');
     speedBtn.type = 'button';
@@ -3785,33 +3886,72 @@
       speedBtn.textContent = `${speeds[speedIdx]}x`;
     });
 
+    const seekByClientX = (clientX) => {
+      const rect = barsWrap.getBoundingClientRect();
+      if (!rect.width) return;
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const total = (isFinite(audio.duration) && audio.duration > 0) ? audio.duration : knownTotalSec;
+      if (total > 0) {
+        try { audio.currentTime = ratio * total; } catch (e) {}
+        const activeCount = Math.ceil(ratio * barEls.length);
+        barEls.forEach((b, idx) => b.classList.toggle('played', idx < activeCount));
+        durLabel.textContent = `${formatSec(Math.floor(ratio * total))} / ${formatSec(Math.round(total))}`;
+      }
+    };
+
+    barsWrap.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      triggerHaptic('light');
+      seekByClientX(ev.clientX);
+    });
+
+    barsWrap.addEventListener('touchmove', (ev) => {
+      if (ev.touches && ev.touches[0]) {
+        seekByClientX(ev.touches[0].clientX);
+      }
+    }, { passive: true });
+
     audio.addEventListener('loadedmetadata', () => {
       if (isFinite(audio.duration) && audio.duration > 0) {
-        durLabel.textContent = formatSec(Math.round(audio.duration));
+        knownTotalSec = Math.round(audio.duration);
+        if (audio.paused && audio.currentTime === 0) {
+          durLabel.textContent = formatSec(knownTotalSec);
+        }
       }
     });
 
     audio.addEventListener('timeupdate', () => {
-      const ratio = audio.duration ? audio.currentTime / audio.duration : 0;
+      const total = (isFinite(audio.duration) && audio.duration > 0) ? audio.duration : knownTotalSec;
+      const ratio = total > 0 ? Math.min(1, audio.currentTime / total) : 0;
       const activeCount = Math.ceil(ratio * barEls.length);
       barEls.forEach((b, idx) => b.classList.toggle('played', idx < activeCount));
-      durLabel.textContent = formatSec(Math.floor(audio.currentTime));
+      const cur = Math.floor(audio.currentTime || 0);
+      durLabel.textContent = total > 0 ? `${formatSec(cur)} / ${formatSec(Math.round(total))}` : formatSec(cur);
+    });
+
+    audio.addEventListener('pause', () => {
+      playBtn.textContent = '▶';
     });
 
     audio.addEventListener('ended', () => {
       playBtn.textContent = '▶';
+      if (activePlayingMediaEl === audio) activePlayingMediaEl = null;
+      try { audio.currentTime = 0; } catch (e) {}
       barEls.forEach((b) => b.classList.remove('played'));
+      durLabel.textContent = knownTotalSec > 0 ? formatSec(knownTotalSec) : '0:00';
     });
 
     playBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       triggerHaptic('light');
       if (audio.paused) {
+        pauseOtherActiveMedia(audio);
         audio.playbackRate = speeds[speedIdx];
-        audio.play();
+        audio.play().catch(() => {});
         playBtn.textContent = '⏸';
       } else {
         audio.pause();
+        if (activePlayingMediaEl === audio) activePlayingMediaEl = null;
         playBtn.textContent = '▶';
       }
     });
@@ -6847,7 +6987,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=41').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=42').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
