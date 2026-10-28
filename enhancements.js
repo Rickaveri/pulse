@@ -625,9 +625,78 @@
     });
   }
 
+
+  // В) Ускорение голосовых сообщений и видеокружочков (1x -> 1.5x -> 2x) + Карточки превью ссылок (v36)
+  let currentVoiceSpeed = 1.0;
+  function enhanceMediaAndLinksV36() {
+    if (!messagesViewport) return;
+    const bubbles = messagesViewport.querySelectorAll(".msg-bubble:not([data-v36-ready])");
+    bubbles.forEach((bubble) => {
+      bubble.setAttribute("data-v36-ready", "1");
+
+      // 1) Кнопка скорости 1x / 1.5x / 2x рядом с голосовым сообщением
+      const audioEl = bubble.querySelector("audio");
+      if (audioEl && !bubble.querySelector(".audio-speed-pill")) {
+        audioEl.playbackRate = currentVoiceSpeed;
+        const speedPill = document.createElement("button");
+        speedPill.type = "button";
+        speedPill.className = "audio-speed-pill";
+        speedPill.textContent = currentVoiceSpeed + "x";
+        speedPill.title = "Скорость воспроизведения";
+        speedPill.addEventListener("click", (e) => {
+          e.stopPropagation();
+          currentVoiceSpeed = currentVoiceSpeed === 1.0 ? 1.5 : currentVoiceSpeed === 1.5 ? 2.0 : 1.0;
+          document.querySelectorAll(".msg-bubble audio").forEach((a) => { a.playbackRate = currentVoiceSpeed; });
+          document.querySelectorAll(".audio-speed-pill").forEach((p) => { p.textContent = currentVoiceSpeed + "x"; });
+        });
+        audioEl.insertAdjacentElement("afterend", speedPill);
+      }
+
+      // 2) Автоматическая карточка сайта (Rich Link Preview) для внешних ссылок
+      const linkEl = bubble.querySelector("a[href^=\"http\"]");
+      if (linkEl && !bubble.querySelector(".rich-link-card") && !bubble.querySelector("iframe")) {
+        try {
+          const urlObj = new URL(linkEl.href);
+          if (!urlObj.hostname.includes("supabase.co")) {
+            const card = document.createElement("a");
+            card.className = "rich-link-card";
+            card.href = linkEl.href;
+            card.target = "_blank";
+            card.rel = "noopener noreferrer";
+            const domSpan = document.createElement("span");
+            domSpan.className = "rich-link-domain";
+            domSpan.textContent = "🌐 " + urlObj.hostname.replace(/^www\./, "");
+            const openSpan = document.createElement("span");
+            openSpan.className = "rich-link-open";
+            openSpan.textContent = "Открыть ↗";
+            card.appendChild(domSpan);
+            card.appendChild(openSpan);
+            const metaEl = bubble.querySelector(".msg-meta");
+            if (metaEl) bubble.insertBefore(card, metaEl);
+            else bubble.appendChild(card);
+          }
+        } catch (e) {}
+      }
+    });
+  }
+
+  if (messagesViewport && "MutationObserver" in window) {
+    let v36Raf = false;
+    const v36Obs = new MutationObserver(() => {
+      if (v36Raf) return;
+      v36Raf = true;
+      requestAnimationFrame(() => {
+        v36Raf = false;
+        enhanceMediaAndLinksV36();
+      });
+    });
+    v36Obs.observe(messagesViewport, { childList: true, subtree: true });
+    enhanceMediaAndLinksV36();
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=35').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=36').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

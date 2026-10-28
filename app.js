@@ -4195,7 +4195,7 @@
         }).catch(() => {});
       };
       sendOfferBroadcast();
-      activeCallState.offerRepeatId = setInterval(sendOfferBroadcast, 2000);
+      activeCallState.offerRepeatId = setInterval(sendOfferBroadcast, 900);
       // Автоматический сброс гудков через 35 секунд, если собеседник не ответил
       activeCallState.noAnswerTimeoutId = setTimeout(() => {
         if (activeCallState && activeCallState.isOutgoing && !activeCallState.callStartTime) {
@@ -6257,7 +6257,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=35').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=36').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
