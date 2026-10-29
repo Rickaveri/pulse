@@ -273,7 +273,13 @@
         else navigator.vibrate(9);
       } catch (e) {}
     }
-    if (iosHapticLabel) {
+    // Не вызываем .click() по скрытому input на iPhone во время открытой клавиатуры,
+    // чтобы iOS WebKit не перебрасывал фокус и скролл к скрытому переключателю!
+    if (
+      iosHapticLabel &&
+      !document.body.classList.contains('keyboard-open') &&
+      document.activeElement !== messageInput
+    ) {
       try {
         iosHapticLabel.click();
       } catch (e) {}
@@ -2763,9 +2769,11 @@
   function pinChatToBottomInstant() {
     if (!messagesViewport) return;
     messagesViewport.scrollTop = messagesViewport.scrollHeight + 20000;
+    lastKnownMessagesClientH = messagesViewport.clientHeight;
     requestAnimationFrame(() => {
       if (messagesViewport) {
         messagesViewport.scrollTop = messagesViewport.scrollHeight + 20000;
+        lastKnownMessagesClientH = messagesViewport.clientHeight;
       }
     });
   }
@@ -7143,7 +7151,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=45').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=46').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

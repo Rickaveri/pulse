@@ -33,7 +33,11 @@
     if (navigator.vibrate) {
       try { navigator.vibrate(type === 'medium' ? 16 : 9); } catch (e) {}
     }
-    if (iosHapticLabel) {
+    if (
+      iosHapticLabel &&
+      !document.body.classList.contains('keyboard-open') &&
+      document.activeElement !== messageInput
+    ) {
       try { iosHapticLabel.click(); } catch (e) {}
     }
   }
@@ -639,7 +643,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=45').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=46').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

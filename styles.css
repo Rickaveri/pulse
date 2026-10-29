@@ -79,10 +79,10 @@ input, textarea {
 /* Скрытый переключатель для нативного Taptic Engine на iPhone (iOS 17.4+ / iOS 18) */
 .ios-haptic-trigger {
   position: fixed;
-  top: -100px;
-  left: -100px;
-  width: 1px;
-  height: 1px;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  height: 0;
   opacity: 0;
   pointer-events: none;
   overflow: hidden;
