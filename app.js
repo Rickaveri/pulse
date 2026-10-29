@@ -3280,18 +3280,23 @@
       }
 
       const isMine = msg.sender_id === currentUser.id;
+      const kind = detectMessageKind(msg);
+      const isCircle = kind === 'video_circle';
       const packetMapForSig = reactionsByTargetId.get(msg.id);
       const reactSig = packetMapForSig
         ? Array.from(packetMapForSig.entries()).map(([u, v]) => `${u}:${v.emoji}`).join(',')
         : '';
-      const rowSig = `${msg.content || ''}|${reactSig}`;
+      const rowSig = `${kind}|${msg.content || ''}|${reactSig}`;
 
       validDomIds.add(String(msg.id));
 
-      // Проверяем: есть ли уже эта строка в DOM (или её оптимистичный двойник при отправке)
+      // Проверяем: есть ли уже эта строка в DOM (или её оптимистичный двойник того же типа kind при отправке)
       let reusableRow = existingRowsById.get(String(msg.id));
       if (!reusableRow && isMine && !String(msg.id).startsWith('optimistic_') && existingOptRows.length > 0) {
-        const matchIdx = existingOptRows.findIndex((el) => el.dataset.rowSig === rowSig || (el.dataset.rowSig || '').split('|')[0] === (msg.content || ''));
+        const matchIdx = existingOptRows.findIndex((el) => {
+          const parts = (el.dataset.rowSig || '').split('|');
+          return el.dataset.rowSig === rowSig || (parts[0] === kind && (parts[1] || '') === (msg.content || ''));
+        });
         if (matchIdx !== -1) {
           reusableRow = existingOptRows.splice(matchIdx, 1)[0];
           reusableRow.dataset.msgId = String(msg.id);
@@ -3326,9 +3331,6 @@
         authorEl.textContent = senderName;
         row.appendChild(authorEl);
       }
-
-      const kind = detectMessageKind(msg);
-      const isCircle = kind === 'video_circle';
       const bubble = document.createElement('div');
       bubble.className = `msg-bubble ${isCircle ? 'circle-bubble' : ''}`;
 
@@ -3402,12 +3404,17 @@
           circleWrap.className = 'video-note-wrap video-circle-msg';
           const vid = document.createElement('video');
           vid.src = (msg.media_url && !msg.media_url.includes('#') && !msg.media_url.startsWith('blob:'))
-            ? `${msg.media_url}#t=0.001`
+            ? `${msg.media_url}#t=0.05`
             : msg.media_url;
           vid.playsInline = true;
           vid.loop = false;
           vid.muted = false;
           vid.preload = 'metadata';
+          vid.addEventListener('loadeddata', () => {
+            if (vid.paused && vid.currentTime === 0) {
+              try { vid.currentTime = 0.05; } catch (e) {}
+            }
+          }, { once: true });
 
           let totalDurSec = Number(msg.media_duration) || 0;
           const badge = document.createElement('div');
@@ -4702,7 +4709,7 @@
         : recMime.includes('mp4') ? 'm4a' : 'webm';
       const path = `${targetRoomSnapshot.id}/${isVideo ? 'circle' : 'voice'}_${Date.now()}.${ext}`;
 
-      // Мгновенно показываем оптимистичное сообщение в ленте чата (0 мс), чтобы пользователь сразу видел отправку!
+      // Мгновенно показываем оптимистичное сообщение в ленте чата (0 мс) с точным типом video_circle или voice!
       const tempId = `optimistic_msg_${Date.now()}`;
       const localBlobUrl = URL.createObjectURL(blob);
       const optimisticMediaRow = {
@@ -4713,7 +4720,7 @@
         sender_color: currentUser.color,
         content: '',
         media_url: localBlobUrl,
-        media_type: 'audio',
+        media_type: isVideo ? 'video_circle' : 'voice',
         media_duration: totalSec,
         created_at: new Date().toISOString(),
         _optimistic: true
@@ -7207,7 +7214,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=47').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=48').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
