@@ -5770,8 +5770,10 @@
     const msgObs = new MutationObserver(() => {
       if (isEnhancing) return;
       isEnhancing = true;
-      enhanceRenderedMessages();
-      isEnhancing = false;
+      requestAnimationFrame(() => {
+        isEnhancing = false;
+        enhanceRenderedMessages();
+      });
     });
     msgObs.observe(messagesViewport, { childList: true });
   }
@@ -5995,8 +5997,14 @@
   }
 
   if (messagesViewport && 'MutationObserver' in window) {
+    let v16Raf = false;
     const v16MsgObs = new MutationObserver(() => {
-      applyV16BubbleUpgrades();
+      if (v16Raf) return;
+      v16Raf = true;
+      requestAnimationFrame(() => {
+        v16Raf = false;
+        applyV16BubbleUpgrades();
+      });
     });
     v16MsgObs.observe(messagesViewport, { childList: true, subtree: false });
     applyV16BubbleUpgrades();
@@ -7095,7 +7103,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=43').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=44').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

@@ -341,9 +341,8 @@
   // 9. Глубокая обработка текста внутри пузырей (Спойлер ||...||, очистка 🔥 30s: и 3D-анимация Кубика/Монетки)
   function processV23DeepBubbles() {
     if (!messagesViewport) return;
-    Array.from(messagesViewport.querySelectorAll('.msg-row')).forEach((row) => {
-      const bubble = row.querySelector('.msg-bubble');
-      if (!bubble) return;
+    Array.from(messagesViewport.querySelectorAll('.msg-bubble:not([data-v23-done])')).forEach((bubble) => {
+      bubble.setAttribute('data-v23-done', '1');
 
       const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, null);
       const textNodes = [];
@@ -441,7 +440,7 @@
         processV23DeepBubbles();
       });
     });
-    v23Obs.observe(messagesViewport, { childList: true, subtree: true });
+    v23Obs.observe(messagesViewport, { childList: true });
     processV23DeepBubbles();
   }
 
@@ -634,7 +633,7 @@
         enhanceMediaAndLinksV36();
       });
     });
-    v36Obs.observe(messagesViewport, { childList: true, subtree: true });
+    v36Obs.observe(messagesViewport, { childList: true });
     enhanceMediaAndLinksV36();
   }
 
