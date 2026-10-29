@@ -1,16 +1,19 @@
-const CACHE_NAME = 'pulse-pwa-v44';
+const CACHE_NAME = 'pulse-pwa-v45';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=44',
-  './config.js?v=44',
-  './app.js?v=44',
-  './enhancements.js?v=44',
+  './styles.css?v=45',
+  './config.js?v=45',
+  './app.js?v=45',
+  './enhancements.js?v=45',
   './manifest.json'
 ];
+
+let lastPushNotifSignature = '';
+let lastPushNotifTime = 0;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -69,12 +72,27 @@ self.addEventListener('message', (event) => {
   const data = event.data;
   if (data && data.type === 'SHOW_NOTIFICATION') {
     event.waitUntil(
-      self.registration.showNotification(data.title || 'Новое сообщение в Pulse', {
-        body: data.body || 'Откройте приложение, чтобы прочитать',
-        tag: `pulse-msg-${Date.now()}`,
-        renotify: true,
-        vibrate: [200, 100, 200],
-        data: { roomId: data.roomId || null }
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+        // Если приложение сейчас открыто на экране — не дублируем системным баннером
+        const isAppVisible = clientList.some((c) => c.visibilityState === 'visible' || c.focused);
+        if (isAppVisible) return;
+
+        const title = data.title || 'Новое сообщение в Pulse';
+        const body = data.body || 'Откройте приложение, чтобы прочитать';
+        const roomId = data.roomId || null;
+        const sig = `${roomId || ''}|${title}|${body}`;
+        const now = Date.now();
+        if (sig === lastPushNotifSignature && (now - lastPushNotifTime) < 3500) return;
+        lastPushNotifSignature = sig;
+        lastPushNotifTime = now;
+
+        return self.registration.showNotification(title, {
+          body,
+          tag: roomId ? `pulse-room-${roomId}` : 'pulse-msg',
+          renotify: true,
+          vibrate: [200, 100, 200],
+          data: { roomId }
+        });
       })
     );
   }
@@ -108,6 +126,15 @@ self.addEventListener('push', (event) => {
       } catch (e) {}
     }
 
+    const isIncomingCall = body.includes('Входящий аудиозвонок') || body.includes('Входящий видеозвонок');
+
+    // Проверяем: если приложение сейчас открыто и активно на экране телефона, НЕ показываем системный пуш поверх чата!
+    const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const hasVisibleClient = clientList.some((c) => c.visibilityState === 'visible' || c.focused);
+    if (hasVisibleClient && !isIncomingCall) {
+      return;
+    }
+
     // Если пришёл пустой сигнал-будильник от APNs, подтягиваем имя отправителя напрямую из Supabase
     if (!gotPayload) {
       try {
@@ -135,10 +162,18 @@ self.addEventListener('push', (event) => {
       } catch (e) {}
     }
 
-    const isIncomingCall = body.includes('Входящий аудиозвонок') || body.includes('Входящий видеозвонок');
+    // Защита от двойных уведомлений за одно и то же сообщение
+    const sig = `${roomId || ''}|${title}|${body}`;
+    const now = Date.now();
+    if (!isIncomingCall && sig === lastPushNotifSignature && (now - lastPushNotifTime) < 3500) {
+      return;
+    }
+    lastPushNotifSignature = sig;
+    lastPushNotifTime = now;
+
     const notifOpts = {
       body,
-      tag: isIncomingCall ? 'pulse-incoming-call' : `pulse-push-${Date.now()}`,
+      tag: isIncomingCall ? 'pulse-incoming-call' : (roomId ? `pulse-room-${roomId}` : 'pulse-push'),
       renotify: true,
       requireInteraction: isIncomingCall,
       vibrate: isIncomingCall ? [300, 150, 300, 150, 300] : [220, 100, 220],

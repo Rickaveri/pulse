@@ -393,7 +393,7 @@
     };
   }
 
-  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА НА IPHONE, ANDROID И СКЛАДНЫХ ЭКРАНАХ (v44)
+  // 0. ИСПРАВЛЕНИЕ КЛАВИАТУРЫ И ПОЛНОЙ ВЫСОТЫ ЭКРАНА НА IPHONE, ANDROID И СКЛАДНЫХ ЭКРАНАХ (v45)
   let lastViewportWidth = window.innerWidth;
   let maxClosedHeightForWidth = 0;
   let lastKnownMessagesClientH = 0;
@@ -428,16 +428,20 @@
       const prevClientH = messagesViewport ? messagesViewport.clientHeight : 0;
       const prevScrollTop = messagesViewport ? messagesViewport.scrollTop : 0;
       const prevScrollH = messagesViewport ? messagesViewport.scrollHeight : 0;
-      const wasNearBottom = (prevScrollH - prevScrollTop - prevClientH) <= 105;
+      const wasNearBottom = (prevScrollH - prevScrollTop - prevClientH) <= 160;
 
       if (isKeyboardOpen && vv) {
         const kbH = Math.round(vvH);
+        document.documentElement.style.minHeight = '0px';
+        document.body.style.minHeight = '0px';
         document.documentElement.style.height = `${kbH}px`;
         document.body.style.height = `${kbH}px`;
         appShell.style.bottom = 'auto';
         appShell.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
         appShell.style.height = `${kbH}px`;
       } else {
+        document.documentElement.style.minHeight = '';
+        document.body.style.minHeight = '';
         document.documentElement.style.height = `${fullPhysicalH}px`;
         document.body.style.height = `${fullPhysicalH}px`;
         appShell.style.top = '0px';
@@ -450,14 +454,14 @@
         const deltaH = (prevClientH > 0 && newClientH > 0) ? (prevClientH - newClientH) : 0;
         lastKnownMessagesClientH = newClientH;
 
-        if (isKeyboardOpen) {
+        if (deltaH !== 0) {
           if (wasNearBottom) {
             messagesViewport.scrollTop = messagesViewport.scrollHeight;
           } else if (deltaH > 0) {
             messagesViewport.scrollTop = prevScrollTop + deltaH;
+          } else if (deltaH < 0) {
+            messagesViewport.scrollTop = Math.max(0, prevScrollTop + deltaH);
           }
-        } else if (deltaH < 0 && !wasNearBottom) {
-          messagesViewport.scrollTop = Math.max(0, prevScrollTop + deltaH);
         }
       }
     }
@@ -747,10 +751,8 @@
       const subJson = await extractSubJson(sub);
       if (!subJson) return null;
 
-      const existingSubs = Array.isArray(currentUser.push_subs) ? currentUser.push_subs : [];
-      const filtered = existingSubs.filter((s) => s && s.v === 32 && s.endpoint && s.endpoint !== subJson.endpoint);
-      filtered.push(subJson);
-      const trimmed = filtered.slice(-4);
+      // Храним только актуальный активный токен подписки без старых дубликатов, чтобы не приходило по 2 пуша
+      const trimmed = [subJson];
 
       currentUser.push_subs = trimmed;
       const packed = packProfileMeta({
@@ -906,7 +908,8 @@
 
       for (const uid of targetRecipientIds) {
         const prof = freshList.find((p) => p.id === uid) || allProfiles.find((p) => p.id === uid);
-        const subs = prof && Array.isArray(prof.push_subs) ? prof.push_subs : [];
+        const rawSubs = prof && Array.isArray(prof.push_subs) ? prof.push_subs : [];
+        const subs = rawSubs.length > 1 ? [rawSubs[rawSubs.length - 1]] : rawSubs;
         for (const sub of subs) {
           if (!sub || !sub.endpoint || !sub.keys) continue;
           try {
@@ -1350,6 +1353,29 @@
     });
   }
 
+  function mergeRoomMessagesList(existingList, newList) {
+    const byId = new Map();
+    const realContentSet = new Set();
+    (newList || []).forEach((m) => {
+      if (m && m.id && !String(m.id).startsWith('optimistic_')) {
+        realContentSet.add(`${m.sender_id}|${m.content || ''}`);
+      }
+    });
+    (existingList || []).forEach((m) => {
+      if (!m || !m.id) return;
+      if (String(m.id).startsWith('optimistic_') && realContentSet.has(`${m.sender_id}|${m.content || ''}`)) {
+        return;
+      }
+      byId.set(String(m.id), m);
+    });
+    (newList || []).forEach((m) => {
+      if (m && m.id) byId.set(String(m.id), m);
+    });
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+  }
+
   async function preloadAllRoomsMessages() {
     if (!currentUser || !supabaseClient || myRooms.length === 0) return;
     const roomIds = myRooms.map((r) => r.id);
@@ -1374,7 +1400,9 @@
 
     await Promise.all(
       myRooms.map(async (room) => {
-        const list = grouped.get(room.id) || [];
+        const incomingSlice = grouped.get(room.id) || [];
+        const prevCached = roomMessagesCache.get(room.id) || [];
+        const list = mergeRoomMessagesList(prevCached, incomingSlice);
         roomMessagesCache.set(room.id, list);
 
         if (!activeRoom || activeRoom.id !== room.id) {
@@ -1411,7 +1439,9 @@
     );
 
     updateAppIconBadge();
-    renderSidebarList();
+    if (!appShell.classList.contains('chat-active') || window.innerWidth > 768) {
+      renderSidebarList();
+    }
     saveBootSnapshotToStorage();
   }
 
@@ -1421,6 +1451,9 @@
     if (incoming.id && notifiedMsgIds.has(incoming.id)) return;
     if (incoming.id) notifiedMsgIds.add(incoming.id);
 
+    const k = detectMessageKind(incoming);
+    if (k === 'pin_packet') return;
+
     let room = myRooms.find((r) => r.id === incoming.room_id);
     if (!room) {
       await refreshDirectoryAndRooms();
@@ -1428,11 +1461,32 @@
     }
     if (!room || !isRoomVisibleToCurrentUser(room)) return;
 
-    const isChatCurrentlyVisible =
+    const isAppVisible = !document.hidden && document.visibilityState === 'visible';
+    const isChatCurrentlyVisible = Boolean(
       activeRoom &&
       activeRoom.id === incoming.room_id &&
-      !document.hidden &&
-      (window.innerWidth > 768 || appShell.classList.contains('chat-active'));
+      isAppVisible &&
+      (window.innerWidth > 768 || appShell.classList.contains('chat-active'))
+    );
+
+    // 1) Если мы прямо сейчас открыли этот диалог и переписываемся в нём —
+    // НЕ присылаем никаких всплывающих пушей и баннеров поверх переписки!
+    if (isChatCurrentlyVisible) {
+      setLastReadTimestamp(room.id, Date.now());
+      publishReadReceiptForRoom(room.id);
+      if (k !== 'reaction_packet') {
+        triggerHaptic('light');
+      }
+      return;
+    }
+
+    // 2) Сообщение пришло в другой диалог (или когда мы в списке чатов / свернули приложение)
+    if (k !== 'reaction_packet') {
+      const prevCount = unreadCounts.get(room.id) || 0;
+      unreadCounts.set(room.id, prevCount + 1);
+      updateAppIconBadge();
+      renderSidebarList();
+    }
 
     playNotificationSound();
     triggerHaptic('medium');
@@ -1444,26 +1498,18 @@
       incoming.sender_name ||
       getRoomPresentation(room).title;
 
-    const k = detectMessageKind(incoming);
-    if (!isChatCurrentlyVisible) {
-      if (k !== 'reaction_packet' && k !== 'pin_packet') {
-        const prevCount = unreadCounts.get(room.id) || 0;
-        unreadCounts.set(room.id, prevCount + 1);
-        updateAppIconBadge();
-        renderSidebarList();
-      }
+    if (isAppVisible) {
+      // Если мы внутри приложения (в другом чате или в списке диалогов) — показываем только аккуратный внутриигровой баннер сверху, без дубля на экран блокировки
+      showInAppToast({
+        title: senderName,
+        text: previewText,
+        peer: senderProfile,
+        roomId: room.id
+      });
     } else {
-      setLastReadTimestamp(room.id, Date.now());
+      // Если приложение свёрнуто — отправляем системное уведомление
+      sendSystemNotification(senderName, previewText, room.id);
     }
-
-    showInAppToast({
-      title: senderName,
-      text: previewText,
-      peer: senderProfile,
-      roomId: room.id
-    });
-
-    sendSystemNotification(senderName, previewText, room.id);
   }
 
   if ('serviceWorker' in navigator) {
@@ -2923,12 +2969,11 @@
       .limit(150);
 
     if (error) return;
-    // Строгая хронологическая сортировка от старых к новым (чтобы сообщения из разных дней НИКОГДА не путались местами!)
-    const fetched = (descMsgs || []).slice().sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    );
-
+    // Строгая хронологическая сортировка и мягкое слияние с уже загруженными сообщениями в памяти,
+    // чтобы при появлении 151-го сообщения начало ленты не сдвигалось и не вызывало пересборку DOM!
     const prevCached = roomMessagesCache.get(roomId) || [];
+    const fetched = mergeRoomMessagesList(prevCached, descMsgs || []);
+
     const isIdenticalToRendered =
       messagesViewport.dataset.renderedRoomId === roomId &&
       prevCached.length === fetched.length &&
@@ -3093,14 +3138,16 @@
         })
       : decryptedList;
 
+    const savedScrollTopBefore = messagesViewport.scrollTop;
+    const savedScrollHeightBefore = messagesViewport.scrollHeight;
     const distFromBottomBefore =
-      messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+      savedScrollHeightBefore - savedScrollTopBefore - messagesViewport.clientHeight;
     const isSwitchingRoomNow = messagesViewport.dataset.renderedRoomId !== roomSnapshot.id;
     const isMediaPlayingInChat = Boolean(activePlayingMediaEl && !activePlayingMediaEl.paused);
     const wasNearBottom =
       Boolean(forceScrollBottom) ||
       isSwitchingRoomNow ||
-      (!isMediaPlayingInChat && !replyToMsg && !editingMsg && distFromBottomBefore < 95);
+      (!isMediaPlayingInChat && !editingMsg && distFromBottomBefore < 220);
 
     if (filteredList.length === 0) {
       messagesViewport.innerHTML = '';
@@ -3117,27 +3164,13 @@
       return;
     }
 
-    // Проверяем, можно ли достроить только новые сообщения в конец без пересборки:
-    // Только если в DOM уже лежит точное начало того же самого списка filteredList!
+    // НИКОГДА не очищаем messagesViewport.innerHTML = '', если мы уже находимся в этом же диалоге!
+    // Это полностью исключает сброс скролла наверх и повторную загрузку фото/кружочков во время общения (v45)
     const currentDomRows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
-    let canPatchIncrementally =
+    const isSameRoomIncremental =
       messagesViewport.dataset.renderedRoomId === roomSnapshot.id &&
       !activeChatFilterQuery &&
-      currentDomRows.length > 0 &&
-      currentDomRows.length <= filteredList.length;
-
-    if (canPatchIncrementally) {
-      for (let i = 0; i < currentDomRows.length; i++) {
-        const domId = currentDomRows[i].dataset.msgId || '';
-        const targetId = String(filteredList[i].msg.id || '');
-        if (!domId.startsWith('optimistic_msg_') && domId !== targetId) {
-          canPatchIncrementally = false;
-          break;
-        }
-      }
-    }
-
-    const isSameRoomIncremental = canPatchIncrementally;
+      currentDomRows.length > 0;
 
     const existingRowsById = new Map();
     const existingOptRows = [];
@@ -3194,10 +3227,11 @@
       // Проверяем: есть ли уже эта строка в DOM (или её оптимистичный двойник при отправке)
       let reusableRow = existingRowsById.get(String(msg.id));
       if (!reusableRow && isMine && !String(msg.id).startsWith('optimistic_') && existingOptRows.length > 0) {
-        const matchIdx = existingOptRows.findIndex((el) => el.dataset.rowSig === rowSig);
+        const matchIdx = existingOptRows.findIndex((el) => el.dataset.rowSig === rowSig || (el.dataset.rowSig || '').split('|')[0] === (msg.content || ''));
         if (matchIdx !== -1) {
           reusableRow = existingOptRows.splice(matchIdx, 1)[0];
           reusableRow.dataset.msgId = String(msg.id);
+          reusableRow.dataset.rowSig = rowSig;
         }
       }
 
@@ -3285,7 +3319,8 @@
           img.alt = 'Фото';
           img.addEventListener('load', () => {
             if (!messagesViewport) return;
-            if ((Date.now() - lastRoomOpenTs) < 900) {
+            const distNow = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+            if ((Date.now() - lastRoomOpenTs) < 2200 || distNow < 340) {
               pinChatToBottomInstant();
             }
           }, { once: true });
@@ -3690,8 +3725,13 @@
       seenCapsule.remove();
     }
 
-    if (!activeChatFilterQuery && wasNearBottom) {
-      pinChatToBottomInstant();
+    if (!activeChatFilterQuery) {
+      if (wasNearBottom) {
+        pinChatToBottomInstant();
+      } else if (!isSameRoomIncremental && savedScrollTopBefore > 0) {
+        const heightDiff = messagesViewport.scrollHeight - savedScrollHeightBefore;
+        messagesViewport.scrollTop = Math.max(0, savedScrollTopBefore + heightDiff);
+      }
     }
   }
 
@@ -4202,7 +4242,7 @@
     };
     roomMessages.push(optimisticRow);
     roomMessagesCache.set(roomSnapshot.id, roomMessages);
-    await renderMessages(roomSnapshot.id);
+    await renderMessages(roomSnapshot.id, true);
 
     const { data: insertedRows, error } = await insertMessageRow({
       room_id: roomSnapshot.id,
@@ -4212,7 +4252,7 @@
 
     if (error) {
       alert('Ошибка отправки: ' + error.message);
-      await loadMessages(roomSnapshot.id);
+      await loadMessages(roomSnapshot.id, true);
       return;
     }
 
@@ -4232,7 +4272,7 @@
         renderSidebarList();
       }
       if (activeRoom && activeRoom.id === roomSnapshot.id) {
-        await renderMessages(roomSnapshot.id);
+        await renderMessages(roomSnapshot.id, true);
       }
     }
   }
@@ -7103,7 +7143,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=44').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=45').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
