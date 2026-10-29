@@ -518,16 +518,42 @@
     composerWrap.parentElement.insertBefore(smartRepliesBar, composerWrap);
   }
 
-  let lastEvaluatedIncomingText = '';
+  let lastEvaluatedIncomingId = '';
+  const dismissedQuickReplyMsgIds = new Set();
+
+  function dismissCurrentQuickReplies() {
+    if (!smartRepliesBar) return;
+    smartRepliesBar.classList.add('hidden');
+    if (lastEvaluatedIncomingId) {
+      dismissedQuickReplyMsgIds.add(lastEvaluatedIncomingId);
+    }
+  }
+
   function updateSmartQuickReplies() {
     if (!smartRepliesBar || !messagesViewport || !messageInput) return;
+
+    // Никогда не показываем и не дёргаем панель быстрых ответов, когда пользователь уже печатает или открыта клавиатура!
+    if (
+      document.activeElement === messageInput ||
+      document.body.classList.contains('keyboard-open') ||
+      messageInput.value.trim().length > 0
+    ) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+
     const rows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
     if (!rows.length) {
       smartRepliesBar.classList.add('hidden');
       return;
     }
     const lastRow = rows[rows.length - 1];
-    if (lastRow.classList.contains('mine')) {
+    if (lastRow.classList.contains('mine') || lastRow.classList.contains('own')) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+    const msgId = String(lastRow.dataset.msgId || '');
+    if (msgId && dismissedQuickReplyMsgIds.has(msgId)) {
       smartRepliesBar.classList.add('hidden');
       return;
     }
@@ -536,25 +562,34 @@
       smartRepliesBar.classList.add('hidden');
       return;
     }
-    const rawText = (bubble.textContent || '').trim().toLowerCase();
-    if (!rawText || rawText === lastEvaluatedIncomingText) return;
-    lastEvaluatedIncomingText = rawText;
 
+    const cleanClone = bubble.cloneNode(true);
+    cleanClone.querySelectorAll('.msg-meta, .msg-reply-quote, .reaction-chip-pill').forEach((el) => el.remove());
+    const rawText = (cleanClone.textContent || '').trim().toLowerCase();
+    if (!rawText) {
+      smartRepliesBar.classList.add('hidden');
+      return;
+    }
+
+    // Показываем быстрые ответы ТОЛЬКО когда собеседник задал конкретный вопрос (?), поздоровался или предложил созвониться
     let suggestions = [];
-    if (rawText.includes('привет') || rawText.includes('здравствуй') || rawText.includes('добр')) {
+    if (/^(привет|здравствуй|доброе|добрый|хай|салам)/i.test(rawText)) {
       suggestions = ['Привет! 👋', 'Привет, как дела?', 'На связи! ✨'];
     } else if (rawText.includes('звонок') || rawText.includes('позвон') || rawText.includes('созвон')) {
       suggestions = ['Давай созвонимся 📞', 'Наберу через 5 мин', 'Сейчас не могу говорить'];
     } else if (rawText.includes('?')) {
       suggestions = ['👍 Да!', 'Сейчас гляну 👀', 'Ок, договорились 🤝', 'Чуть позже напишу'];
-    } else if (rawText.length > 2) {
-      suggestions = ['👍 Супер!', 'Понял, спасибо!', 'Ок 👌'];
     }
 
     if (!suggestions.length) {
       smartRepliesBar.classList.add('hidden');
       return;
     }
+
+    if (msgId && msgId === lastEvaluatedIncomingId && !smartRepliesBar.classList.contains('hidden')) {
+      return;
+    }
+    lastEvaluatedIncomingId = msgId || rawText;
 
     smartRepliesBar.innerHTML = '';
     suggestions.forEach((txt) => {
@@ -563,7 +598,7 @@
       chip.className = 'smart-reply-chip';
       chip.textContent = txt;
       chip.addEventListener('click', () => {
-        smartRepliesBar.classList.add('hidden');
+        dismissCurrentQuickReplies();
         messageInput.value = txt;
         messageInput.dispatchEvent(new Event('input', { bubbles: true }));
         const sendBtn = document.getElementById('smartActionBtn');
@@ -571,6 +606,18 @@
       });
       smartRepliesBar.appendChild(chip);
     });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'smart-reply-chip';
+    closeBtn.style.cssText = 'padding:4px 8px; opacity:0.7; border-color:transparent; background:transparent;';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Скрыть подсказки';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dismissCurrentQuickReplies();
+    });
+    smartRepliesBar.appendChild(closeBtn);
     smartRepliesBar.classList.remove('hidden');
   }
 
@@ -581,11 +628,9 @@
     srObs.observe(messagesViewport, { childList: true });
   }
   if (messageInput) {
-    messageInput.addEventListener('input', () => {
-      if (messageInput.value.trim().length > 0 && smartRepliesBar) {
-        smartRepliesBar.classList.add('hidden');
-      }
-    });
+    // Как только пользователь нажал на поле ввода, чтобы печатать сам — сразу убираем подсказки и не возвращаем их для этого сообщения
+    messageInput.addEventListener('focus', dismissCurrentQuickReplies);
+    messageInput.addEventListener('input', dismissCurrentQuickReplies);
   }
 
 
@@ -643,7 +688,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=46').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=47').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

@@ -1902,7 +1902,12 @@
     el.dataset.renderedAvatarKey = nextKey;
 
     if (avatar_url) {
-      el.innerHTML = `<img src="${escapeHtml(avatar_url)}" alt="Аватар" decoding="async" />`;
+      const existingImg = el.querySelector('img');
+      if (existingImg && existingImg.getAttribute('src') === avatar_url) {
+        el.style.background = 'transparent';
+        return;
+      }
+      el.innerHTML = `<img src="${escapeHtml(avatar_url)}" alt="Аватар" decoding="sync" />`;
       el.style.background = 'transparent';
     } else {
       el.innerHTML = '';
@@ -2209,7 +2214,7 @@
 
   document.addEventListener('visibilitychange', async () => {
     if (!document.hidden && currentUser && supabaseClient) {
-      await refreshDirectoryAndRooms();
+      await refreshDirectoryAndRooms(true);
       await preloadAllRoomsMessages();
       if (activeRoom) {
         await loadMessages(activeRoom.id);
@@ -2220,7 +2225,7 @@
 
   window.addEventListener('online', async () => {
     if (currentUser && supabaseClient) {
-      await refreshDirectoryAndRooms();
+      await refreshDirectoryAndRooms(true);
       await preloadAllRoomsMessages();
       if (activeRoom) await loadMessages(activeRoom.id);
     }
@@ -2494,10 +2499,21 @@
   function renderSidebarList() {
     const rawQuery = searchInput.value.trim();
     searchClearBtn.classList.toggle('hidden', !rawQuery);
-    chatList.innerHTML = '';
 
     if (!rawQuery) {
       listSectionLabel.textContent = 'Мои диалоги';
+
+      // Сохраняем уже созданные DOM-карточки диалогов по data-room-id, чтобы НЕ пересоздавать <img> аватарки
+      // и полностью убрать мигание фото-аватарок (например, у Майка) в первые секунды запуска! (v47)
+      const existingItemsByRoomId = new Map();
+      Array.from(chatList.children).forEach((child) => {
+        const rid = child.dataset && child.dataset.roomId;
+        if (rid) {
+          existingItemsByRoomId.set(rid, child);
+        } else {
+          child.remove();
+        }
+      });
 
       const sortedRooms = [...myRooms].sort((a, b) => {
         const aSaved = (a.direct_key || '').startsWith('saved_') ? 1 : 0;
@@ -2508,29 +2524,89 @@
         return bTs - aTs;
       });
 
-      sortedRooms.forEach((room) => {
+      const validRoomIds = new Set();
+
+      sortedRooms.forEach((room, idx) => {
+        validRoomIds.add(String(room.id));
         const pres = getRoomPresentation(room);
         const summary = roomSummaryMap.get(room.id);
         const unread = unreadCounts.get(room.id) || 0;
         const draft = (!activeRoom || activeRoom.id !== room.id) ? getRoomDraft(room.id) : '';
-        const item = document.createElement('div');
+
+        let item = existingItemsByRoomId.get(String(room.id));
+        let avatarWrap;
+        let av;
+        let body;
+
+        if (!item) {
+          item = document.createElement('div');
+          item.dataset.roomId = String(room.id);
+
+          avatarWrap = document.createElement('div');
+          avatarWrap.className = 'avatar-wrap';
+          av = document.createElement('div');
+          av.className = 'avatar';
+          avatarWrap.appendChild(av);
+
+          body = document.createElement('div');
+          body.className = 'chat-item-body';
+
+          item.appendChild(avatarWrap);
+          item.appendChild(body);
+
+          let touchStartY = 0;
+          let touchStartX = 0;
+          let openedOnTouch = false;
+          item.addEventListener('touchstart', (ev) => {
+            const t = ev.touches && ev.touches[0];
+            if (t) {
+              touchStartX = t.clientX;
+              touchStartY = t.clientY;
+            }
+            openedOnTouch = false;
+          }, { passive: true });
+          item.addEventListener('touchend', (ev) => {
+            const t = ev.changedTouches && ev.changedTouches[0];
+            if (!t) return;
+            if (Math.abs(t.clientX - touchStartX) < 12 && Math.abs(t.clientY - touchStartY) < 12) {
+              openedOnTouch = true;
+              triggerHaptic('light');
+              const targetRm = myRooms.find((r) => String(r.id) === String(room.id)) || room;
+              selectRoom(targetRm);
+            }
+          }, { passive: true });
+          item.addEventListener('click', () => {
+            if (openedOnTouch) {
+              openedOnTouch = false;
+              return;
+            }
+            triggerHaptic('light');
+            const targetRm = myRooms.find((r) => String(r.id) === String(room.id)) || room;
+            selectRoom(targetRm);
+          });
+        } else {
+          avatarWrap = item.querySelector('.avatar-wrap');
+          av = item.querySelector('.avatar');
+          body = item.querySelector('.chat-item-body');
+        }
+
         item.className = `chat-item ${activeRoom && activeRoom.id === room.id ? 'active' : ''}`;
 
-        const avatarWrap = document.createElement('div');
-        avatarWrap.className = 'avatar-wrap';
-        const av = document.createElement('div');
-        av.className = 'avatar';
         renderAvatarElement(av, {
           avatar_url: pres.avatar_url,
           letter: pres.letter,
           color: pres.color
         });
-        avatarWrap.appendChild(av);
 
+        let dot = avatarWrap.querySelector('.online-dot');
         if (pres.online) {
-          const dot = document.createElement('span');
-          dot.className = 'online-dot';
-          avatarWrap.appendChild(dot);
+          if (!dot) {
+            dot = document.createElement('span');
+            dot.className = 'online-dot';
+            avatarWrap.appendChild(dot);
+          }
+        } else if (dot) {
+          dot.remove();
         }
 
         const subLine = pres.isTyping
@@ -2540,9 +2616,7 @@
           : (summary && summary.preview ? summary.preview : pres.subtitle);
         const timeLabel = summary && summary.timeStr ? summary.timeStr : '';
 
-        const body = document.createElement('div');
-        body.className = 'chat-item-body';
-        body.innerHTML = `
+        const nextBodyHtml = `
           <div class="chat-item-top">
             <span class="chat-item-title">${escapeHtml(pres.title)}</span>
             ${timeLabel ? `<span class="chat-item-time">${escapeHtml(timeLabel)}</span>` : ''}
@@ -2552,42 +2626,24 @@
             ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
           </div>
         `;
+        if (body.dataset.renderedBodyHtml !== nextBodyHtml) {
+          body.dataset.renderedBodyHtml = nextBodyHtml;
+          body.innerHTML = nextBodyHtml;
+        }
 
-        item.appendChild(avatarWrap);
-        item.appendChild(body);
-        let touchStartY = 0;
-        let touchStartX = 0;
-        let openedOnTouch = false;
-        item.addEventListener('touchstart', (ev) => {
-          const t = ev.touches && ev.touches[0];
-          if (t) {
-            touchStartX = t.clientX;
-            touchStartY = t.clientY;
-          }
-          openedOnTouch = false;
-        }, { passive: true });
-        item.addEventListener('touchend', (ev) => {
-          const t = ev.changedTouches && ev.changedTouches[0];
-          if (!t) return;
-          if (Math.abs(t.clientX - touchStartX) < 12 && Math.abs(t.clientY - touchStartY) < 12) {
-            openedOnTouch = true;
-            triggerHaptic('light');
-            selectRoom(room);
-          }
-        }, { passive: true });
-        item.addEventListener('click', () => {
-          if (openedOnTouch) {
-            openedOnTouch = false;
-            return;
-          }
-          triggerHaptic('light');
-          selectRoom(room);
-        });
-        chatList.appendChild(item);
+        const currentAtIdx = chatList.children[idx];
+        if (currentAtIdx !== item) {
+          chatList.insertBefore(item, currentAtIdx || null);
+        }
+      });
+
+      existingItemsByRoomId.forEach((el, rid) => {
+        if (!validRoomIds.has(rid)) el.remove();
       });
       return;
     }
 
+    chatList.innerHTML = '';
     listSectionLabel.textContent = 'Результаты поиска';
     const cleanQ = rawQuery.toLowerCase().replace(/^@+/, '');
     const phoneQ = rawQuery.replace(/\D/g, '');
@@ -7151,7 +7207,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=46').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=47').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
