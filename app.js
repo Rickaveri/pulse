@@ -2645,16 +2645,51 @@
 
     chatList.innerHTML = '';
     listSectionLabel.textContent = 'Результаты поиска';
-    const cleanQ = rawQuery.toLowerCase().replace(/^@+/, '');
+    const cleanQ = rawQuery.toLowerCase().replace(/^@+/, '').trim();
     const phoneQ = rawQuery.replace(/\D/g, '');
+    const normalizePhone10 = (val) => {
+      const d = String(val || '').replace(/\D/g, '');
+      return (d.length === 11 && (d.startsWith('7') || d.startsWith('8'))) ? d.slice(1) : d;
+    };
+    const queryPhone10 = normalizePhone10(rawQuery);
 
+    // Список пользователей, с которыми у текущего аккаунта УЖЕ есть общий диалог или группа
+    const knownContactIds = new Set();
+    myRooms.forEach((r) => {
+      const dk = r.direct_key || '';
+      if (!r.is_group && !dk.startsWith('saved_')) {
+        dk.split('_').forEach((uid) => {
+          if (uid && uid !== currentUser.id) knownContactIds.add(uid);
+        });
+      } else if (r.is_group && dk.startsWith('grp|')) {
+        (dk.split('|')[1] || '').split(',').filter(Boolean).forEach((uid) => {
+          if (uid && uid !== currentUser.id) knownContactIds.add(uid);
+        });
+      }
+    });
+
+    // Безопасный приватный поиск (v49):
+    // 1) Своих собеседников из текущих диалогов можно искать по имени, @username или части номера.
+    // 2) Незнакомых людей из базы нельзя увидеть по 1 букве или по имени — только по ТОЧНОМУ @username, полному номеру телефона (10+ цифр) или точному ID.
     const matchedPeople = allProfiles.filter((p) => {
       if (p.id === currentUser.id) return false;
-      const matchHandle = p.username && p.username.toLowerCase().includes(cleanQ);
-      const matchName = p.display_name && p.display_name.toLowerCase().includes(cleanQ);
+      const isKnownContact = knownContactIds.has(p.id);
+      const uName = (p.username || '').toLowerCase().trim();
+      const dName = (p.display_name || '').toLowerCase().trim();
       const pDigits = (p.phone || '').replace(/\D/g, '');
-      const matchPhone = phoneQ.length >= 3 && pDigits.includes(phoneQ);
-      return matchHandle || matchName || matchPhone;
+      const pPhone10 = normalizePhone10(p.phone);
+
+      if (isKnownContact) {
+        const matchHandle = cleanQ.length >= 1 && uName.includes(cleanQ);
+        const matchName = cleanQ.length >= 1 && dName.includes(cleanQ);
+        const matchPhone = phoneQ.length >= 3 && pDigits.includes(phoneQ);
+        return matchHandle || matchName || matchPhone;
+      }
+
+      const exactUsername = cleanQ.length >= 2 && uName && uName === cleanQ;
+      const exactPhone = queryPhone10.length >= 10 && pPhone10.length >= 10 && queryPhone10 === pPhone10;
+      const exactId = cleanQ.length >= 8 && p.id && p.id.toLowerCase() === cleanQ;
+      return exactUsername || exactPhone || exactId;
     });
 
     if (matchedPeople.length === 0) {
@@ -2663,7 +2698,8 @@
       empty.style.textAlign = 'center';
       empty.style.color = 'var(--text-muted)';
       empty.style.fontSize = '13px';
-      empty.textContent = 'Пользователь с таким @username или телефоном не найден.';
+      empty.style.lineHeight = '1.45';
+      empty.textContent = 'Среди ваших диалогов совпадений нет. Чтобы найти нового человека, введите его точный @username или полный номер телефона.';
       chatList.appendChild(empty);
       return;
     }
@@ -2689,8 +2725,10 @@
         avatarWrap.appendChild(dot);
       }
 
+      const isKnown = knownContactIds.has(person.id);
+      const matchedByPhone = queryPhone10.length >= 10 && normalizePhone10(person.phone) === queryPhone10;
       const subParts = [`@${person.username}`];
-      if (person.phone) subParts.push(person.phone);
+      if (person.phone && (isKnown || matchedByPhone)) subParts.push(person.phone);
 
       const body = document.createElement('div');
       body.className = 'chat-item-body';
@@ -2762,9 +2800,23 @@
     groupNameInput.value = '';
     groupMembersPicker.innerHTML = '';
 
-    const others = allProfiles.filter((p) => p.id !== currentUser.id);
+    const knownIds = new Set();
+    myRooms.forEach((r) => {
+      const dk = r.direct_key || '';
+      if (!r.is_group && !dk.startsWith('saved_')) {
+        dk.split('_').forEach((uid) => {
+          if (uid && uid !== currentUser.id) knownIds.add(uid);
+        });
+      } else if (r.is_group && dk.startsWith('grp|')) {
+        (dk.split('|')[1] || '').split(',').filter(Boolean).forEach((uid) => {
+          if (uid && uid !== currentUser.id) knownIds.add(uid);
+        });
+      }
+    });
+
+    const others = allProfiles.filter((p) => p.id !== currentUser.id && knownIds.has(p.id));
     if (others.length === 0) {
-      groupMembersPicker.innerHTML = `<div style="padding:12px; color:var(--text-muted); font-size:13px;">Пока нет других зарегистрированных пользователей.</div>`;
+      groupMembersPicker.innerHTML = `<div style="padding:12px; color:var(--text-muted); font-size:13px; line-height:1.45;">В списке показаны только ваши контакты. Сначала найдите друзей по точному @username или полному номеру телефона и откройте с ними диалог.</div>`;
     } else {
       others.forEach((person) => {
         const label = document.createElement('label');
@@ -5520,23 +5572,6 @@
             return;
           }
           await refreshDirectoryAndRooms();
-          if (payload.eventType === 'INSERT' && payload.new && payload.new.id !== currentUser.id && !wasKnown) {
-            const newPerson = unpackProfile(payload.new);
-            if (newPerson) {
-              playNotificationSound();
-              showInAppToast({
-                title: '🎉 Новый пользователь в Pulse!',
-                text: `${newPerson.display_name} (@${newPerson.username}) зарегистрировался`,
-                peer: newPerson,
-                roomId: null
-              });
-              sendSystemNotification(
-                'Новый пользователь в Pulse!',
-                `${newPerson.display_name} (@${newPerson.username}) теперь в мессенджере.`,
-                null
-              );
-            }
-          }
         }
       )
       .subscribe(async (status) => {
@@ -7214,7 +7249,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=48').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=49').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
