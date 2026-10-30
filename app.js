@@ -30,6 +30,7 @@
   const displayNameInput = document.getElementById('displayNameInput');
   const usernameInput = document.getElementById('usernameInput');
   const phoneInput = document.getElementById('phoneInput');
+  const emailInputLabel = document.getElementById('emailInputLabel');
   const emailInput = document.getElementById('emailInput');
   const passwordInput = document.getElementById('passwordInput');
   const togglePwdBtn = document.getElementById('togglePwdBtn');
@@ -40,6 +41,9 @@
   const forgotPasswordRow = document.getElementById('forgotPasswordRow');
   const forgotPasswordBtn = document.getElementById('forgotPasswordBtn');
   const resetPwdModal = document.getElementById('resetPwdModal');
+  const resetPwdHelpText = document.getElementById('resetPwdHelpText');
+  const recoveryTokenGroup = document.getElementById('recoveryTokenGroup');
+  const recoveryTokenOrUrlInput = document.getElementById('recoveryTokenOrUrlInput');
   const newResetPasswordInput = document.getElementById('newResetPasswordInput');
   const toggleNewResetPwdBtn = document.getElementById('toggleNewResetPwdBtn');
   const newResetPasswordConfirmInput = document.getElementById('newResetPasswordConfirmInput');
@@ -1947,6 +1951,8 @@
       supabaseClient.auth.onAuthStateChange((event) => {
         if (event === 'PASSWORD_RECOVERY' && resetPwdModal) {
           resetPwdModal.classList.remove('hidden');
+          if (recoveryTokenGroup) recoveryTokenGroup.classList.add('hidden');
+          if (resetPwdHelpText) resetPwdHelpText.textContent = 'Придумайте и подтвердите новый пароль для вашего аккаунта:';
           if (newResetPasswordInput) newResetPasswordInput.value = '';
           if (newResetPasswordConfirmInput) newResetPasswordConfirmInput.value = '';
           if (resetPwdStatus) resetPwdStatus.classList.add('hidden');
@@ -1954,6 +1960,8 @@
       });
       if (window.location.hash && window.location.hash.includes('type=recovery') && resetPwdModal) {
         resetPwdModal.classList.remove('hidden');
+        if (recoveryTokenGroup) recoveryTokenGroup.classList.add('hidden');
+        if (resetPwdHelpText) resetPwdHelpText.textContent = 'Придумайте и подтвердите новый пароль для вашего аккаунта:';
       }
     }
     return true;
@@ -2031,6 +2039,121 @@
     authStatus.classList.remove('hidden');
   }
 
+  // Хэш-индекс входа по @username и номеру телефона (v51)
+  async function sha256HexString(str) {
+    const buf = new TextEncoder().encode(String(str || ''));
+    const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function normalizePhoneDigits10(val) {
+    const d = String(val || '').replace(/\D/g, '');
+    return (d.length === 11 && (d.startsWith('7') || d.startsWith('8'))) ? d.slice(1) : d;
+  }
+
+  async function syncProfileLoginIndexEntry(prof) {
+    if (!prof || !prof.email || !supabaseClient) return;
+    const email = String(prof.email).trim().toLowerCase();
+    if (!email.includes('@')) return;
+    const keys = [];
+    const cleanU = sanitizeUsername(prof.username || '');
+    if (cleanU && cleanU.length >= 2) keys.push(`u:${cleanU}`);
+    const phone10 = normalizePhoneDigits10(prof.phone || '');
+    if (phone10 && phone10.length >= 10) keys.push(`p:${phone10}`);
+
+    try {
+      const localMap = JSON.parse(localStorage.getItem('pulse_login_idx_map') || '{}');
+      keys.forEach((k) => { localMap[k] = email; });
+      localStorage.setItem('pulse_login_idx_map', JSON.stringify(localMap));
+    } catch (e) {}
+
+    for (const k of keys) {
+      try {
+        const h = await sha256HexString(`pulse_login_v51|${k}`);
+        const flagKey = `pulse_idx_up_${h.slice(0, 20)}`;
+        if (localStorage.getItem(flagKey) === email) continue;
+        const path = `auth_idx/h_${h.slice(0, 32)}.json`;
+        const blob = new Blob([JSON.stringify({ email })], { type: 'application/json' });
+        const { error } = await supabaseClient.storage.from('chat-media').upload(path, blob, {
+          contentType: 'application/json',
+          upsert: true
+        });
+        if (!error || (error.message && error.message.toLowerCase().includes('already exists'))) {
+          localStorage.setItem(flagKey, email);
+        }
+      } catch (e) {}
+    }
+  }
+
+  async function resolveLoginIdentifierToEmail(rawInput) {
+    const trimmed = String(rawInput || '').trim();
+    if (!trimmed) return '';
+    // Если введён обычный email (содержит @ и домен после @)
+    const atIdx = trimmed.indexOf('@');
+    if (atIdx > 0 && trimmed.slice(atIdx + 1).includes('.')) {
+      return trimmed.toLowerCase();
+    }
+
+    const phone10 = normalizePhoneDigits10(trimmed);
+    const isPhoneQuery = phone10.length >= 10 && /^[+\d\s()-]+$/.test(trimmed);
+    const cleanU = sanitizeUsername(trimmed);
+    const lookupKey = isPhoneQuery ? `p:${phone10}` : `u:${cleanU}`;
+
+    // 1. Проверяем профили в памяти и в локальном кэше
+    const findInList = (list) => {
+      if (!Array.isArray(list)) return null;
+      return list.find((p) => {
+        if (!p || !p.email) return false;
+        if (isPhoneQuery) return normalizePhoneDigits10(p.phone) === phone10;
+        return sanitizeUsername(p.username) === cleanU;
+      });
+    };
+    const fromMem = findInList(allProfiles);
+    if (fromMem && fromMem.email) return fromMem.email.trim();
+
+    try {
+      const localMap = JSON.parse(localStorage.getItem('pulse_login_idx_map') || '{}');
+      if (localMap[lookupKey]) return localMap[lookupKey];
+    } catch (e) {}
+
+    // 2. Пробуем RPC-функцию или запрос к таблице profiles (если доступно)
+    try {
+      const { data: rpcEmail } = await supabaseClient.rpc('resolve_login_email', { login_input: trimmed });
+      if (rpcEmail && typeof rpcEmail === 'string' && rpcEmail.includes('@')) {
+        return rpcEmail.trim();
+      }
+    } catch (e) {}
+
+    try {
+      const { data: rawProfs } = await supabaseClient.from('profiles').select('*');
+      if (rawProfs && rawProfs.length) {
+        const unpacked = rawProfs.map(unpackProfile).filter(Boolean);
+        const found = findInList(unpacked);
+        if (found && found.email) return found.email.trim();
+      }
+    } catch (e) {}
+
+    // 3. Проверяем публичный хэш-индекс в Storage (chat-media/auth_idx/)
+    try {
+      const h = await sha256HexString(`pulse_login_v51|${lookupKey}`);
+      const path = `auth_idx/h_${h.slice(0, 32)}.json`;
+      const { data: pub } = supabaseClient.storage.from('chat-media').getPublicUrl(path);
+      if (pub && pub.publicUrl) {
+        const resp = await fetch(`${pub.publicUrl}?t=${Date.now()}`, { cache: 'no-store' });
+        if (resp.ok) {
+          const json = await resp.json();
+          if (json && json.email && json.email.includes('@')) {
+            return String(json.email).trim();
+          }
+        }
+      }
+    } catch (e) {}
+
+    return '';
+  }
+
+  let lastResetTargetEmail = '';
+
   tabLogin.addEventListener('click', () => {
     authMode = 'login';
     tabLogin.classList.add('active');
@@ -2039,6 +2162,8 @@
     pwdMeter.classList.add('hidden');
     if (passwordConfirmGroup) passwordConfirmGroup.classList.add('hidden');
     if (forgotPasswordRow) forgotPasswordRow.classList.remove('hidden');
+    if (emailInputLabel) emailInputLabel.textContent = 'Почта, @username или номер телефона';
+    if (emailInput) emailInput.placeholder = 'Email, @username или 8 999 123-45-67';
     authSubmitBtn.textContent = 'Войти';
     authStatus.classList.add('hidden');
   });
@@ -2051,6 +2176,8 @@
     pwdMeter.classList.remove('hidden');
     if (passwordConfirmGroup) passwordConfirmGroup.classList.remove('hidden');
     if (forgotPasswordRow) forgotPasswordRow.classList.add('hidden');
+    if (emailInputLabel) emailInputLabel.textContent = 'Электронная почта';
+    if (emailInput) emailInput.placeholder = 'alex@example.com';
     updatePasswordMatchHint();
     authSubmitBtn.textContent = 'Создать защищённый аккаунт';
     authStatus.classList.add('hidden');
@@ -2059,9 +2186,9 @@
   if (forgotPasswordBtn) {
     forgotPasswordBtn.addEventListener('click', async () => {
       triggerHaptic('light');
-      const email = (emailInput.value || '').trim();
-      if (!email || !email.includes('@')) {
-        showAuthStatus('Сначала введите вашу электронную почту в поле выше, а затем нажмите «Забыли пароль?».', 'error');
+      const rawIdentifier = (emailInput.value || '').trim();
+      if (!rawIdentifier) {
+        showAuthStatus('Сначала введите вашу почту, @username или номер телефона в поле выше, а затем нажмите «Забыли пароль?».', 'error');
         emailInput.focus();
         return;
       }
@@ -2070,17 +2197,36 @@
         return;
       }
       forgotPasswordBtn.disabled = true;
-      showAuthStatus('Отправляем ссылку для сброса пароля на вашу почту...', 'info');
+      showAuthStatus('Ищем аккаунт и отправляем письмо для сброса пароля...', 'info');
       try {
+        const resolvedEmail = await resolveLoginIdentifierToEmail(rawIdentifier);
+        if (!resolvedEmail || !resolvedEmail.includes('@')) {
+          showAuthStatus('Не удалось найти почту по этому @username или номеру. Введите вашу электронную почту напрямую.', 'error');
+          forgotPasswordBtn.disabled = false;
+          return;
+        }
+        lastResetTargetEmail = resolvedEmail;
         const redirectUrl = window.location.origin + window.location.pathname;
-        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(resolvedEmail, {
           redirectTo: redirectUrl
         });
         if (error) throw error;
         showAuthStatus(
-          `Письмо со ссылкой для сброса пароля отправлено на ${email}! Откройте письмо (проверьте и папку «Спам») и нажмите на ссылку.`,
+          `Письмо отправлено на ${resolvedEmail}! Если ссылка в письме ведёт на localhost:3000 — скопируйте её и вставьте в открывшемся окне.`,
           'info'
         );
+        if (resetPwdModal) {
+          resetPwdModal.classList.remove('hidden');
+          if (recoveryTokenGroup) recoveryTokenGroup.classList.remove('hidden');
+          if (recoveryTokenOrUrlInput) recoveryTokenOrUrlInput.value = '';
+          if (newResetPasswordInput) newResetPasswordInput.value = '';
+          if (newResetPasswordConfirmInput) newResetPasswordConfirmInput.value = '';
+          if (resetPwdStatus) {
+            resetPwdStatus.textContent = `Письмо отправлено на ${resolvedEmail}. Скопируйте ссылку из письма (даже если там localhost:3000) и вставьте в первое поле ниже:`;
+            resetPwdStatus.className = 'status-banner info';
+            resetPwdStatus.classList.remove('hidden');
+          }
+        }
       } catch (err) {
         showAuthStatus(translateAuthErrorMessage(err.message), 'error');
       } finally {
@@ -2095,10 +2241,56 @@
     });
   }
 
+  async function establishRecoverySessionFromInput(rawLinkOrCode) {
+    const val = String(rawLinkOrCode || '').trim();
+    if (!val) return false;
+
+    // 1. Если вставлена ссылка с #access_token=...&refresh_token=... (например http://localhost:3000/#access_token=...)
+    if (val.includes('access_token=')) {
+      const hashPart = val.includes('#') ? val.split('#')[1] : (val.includes('?') ? val.split('?')[1] : val);
+      const params = new URLSearchParams(hashPart);
+      const access_token = params.get('access_token');
+      const refresh_token = params.get('refresh_token') || '';
+      if (access_token) {
+        const { error } = await supabaseClient.auth.setSession({ access_token, refresh_token });
+        if (error) throw error;
+        return true;
+      }
+    }
+
+    // 2. Если вставлена ссылка вида https://...supabase.co/auth/v1/verify?token=...&type=recovery или ?token_hash=...
+    if (val.includes('token_hash=') || val.includes('token=')) {
+      const queryPart = val.includes('?') ? val.split('?')[1].split('#')[0] : val;
+      const params = new URLSearchParams(queryPart);
+      const tokenHash = params.get('token_hash') || params.get('token');
+      if (tokenHash) {
+        const { error } = await supabaseClient.auth.verifyOtp({
+          token_hash: tokenHash,
+          type: 'recovery'
+        });
+        if (!error) return true;
+      }
+    }
+
+    // 3. Если введён 6-значный код или токен из письма
+    const targetEmail = lastResetTargetEmail || (emailInput ? await resolveLoginIdentifierToEmail(emailInput.value) : '');
+    if (targetEmail && val.length >= 6 && !val.includes('http')) {
+      const { error } = await supabaseClient.auth.verifyOtp({
+        email: targetEmail,
+        token: val,
+        type: 'recovery'
+      });
+      if (error) throw error;
+      return true;
+    }
+    return false;
+  }
+
   if (saveNewResetPwdBtn && resetPwdModal) {
     saveNewResetPwdBtn.addEventListener('click', async () => {
       const newPwd = newResetPasswordInput ? newResetPasswordInput.value : '';
       const confirmPwd = newResetPasswordConfirmInput ? newResetPasswordConfirmInput.value : '';
+      const rawLinkOrCode = recoveryTokenOrUrlInput ? recoveryTokenOrUrlInput.value.trim() : '';
       const showResetMsg = (text, kind = 'error') => {
         if (!resetPwdStatus) return;
         resetPwdStatus.textContent = text;
@@ -2114,8 +2306,17 @@
         return;
       }
       saveNewResetPwdBtn.disabled = true;
-      showResetMsg('Сохраняем новый пароль...', 'info');
+      showResetMsg('Проверяем токен и сохраняем новый пароль...', 'info');
       try {
+        if (rawLinkOrCode) {
+          await establishRecoverySessionFromInput(rawLinkOrCode);
+        }
+        const { data: sessCheck } = await supabaseClient.auth.getSession();
+        if (!sessCheck || !sessCheck.session) {
+          showResetMsg('Сначала скопируйте ссылку из письма на почте (даже если она ведёт на localhost:3000) и вставьте её в первое поле выше.');
+          saveNewResetPwdBtn.disabled = false;
+          return;
+        }
         const { error } = await supabaseClient.auth.updateUser({ password: newPwd });
         if (error) throw error;
         resetPwdModal.classList.add('hidden');
@@ -2139,7 +2340,7 @@
       return;
     }
 
-    const email = emailInput.value.trim();
+    const rawLoginInput = emailInput.value.trim();
     const password = passwordInput.value;
     const confirmPassword = passwordConfirmInput ? passwordConfirmInput.value : password;
     const nameVal = displayNameInput.value.trim();
@@ -2153,6 +2354,10 @@
       }
       if (!handleVal || handleVal.length < 3) {
         showAuthStatus('Придумайте уникальный @username (минимум 3 латинских символа или цифры).', 'error');
+        return;
+      }
+      if (!rawLoginInput.includes('@') || !rawLoginInput.split('@')[1]?.includes('.')) {
+        showAuthStatus('При регистрации укажите корректную электронную почту (например, alex@gmail.com).', 'error');
         return;
       }
       const pwdCheck = evaluatePasswordStrength(password);
@@ -2175,6 +2380,7 @@
 
     try {
       if (authMode === 'register') {
+        const email = rawLoginInput.toLowerCase();
         const randomColor = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
         const packedMeta = packProfileMeta({
           color: randomColor,
@@ -2205,6 +2411,11 @@
             avatar_color: packedMeta,
             last_seen: new Date().toISOString()
           });
+          await syncProfileLoginIndexEntry({
+            email,
+            username: handleVal,
+            phone: phoneVal
+          });
         }
 
         if (data.user && !data.session) {
@@ -2213,7 +2424,16 @@
           return;
         }
       } else {
-        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        const resolvedEmail = await resolveLoginIdentifierToEmail(rawLoginInput);
+        if (!resolvedEmail || !resolvedEmail.includes('@')) {
+          showAuthStatus(
+            'Аккаунт с таким @username или номером телефона пока не найден. Попробуйте войти по электронной почте (после первого входа быстрый вход по @username и телефону привяжется автоматически).',
+            'error'
+          );
+          authSubmitBtn.disabled = false;
+          return;
+        }
+        const { error } = await supabaseClient.auth.signInWithPassword({ email: resolvedEmail, password });
         if (error) throw error;
       }
 
@@ -2597,6 +2817,9 @@
 
     allProfiles = (rawProfiles || []).map(unpackProfile).filter(Boolean);
     myRooms = (rooms || []).filter(isRoomVisibleToCurrentUser);
+
+    // Фоново синхронизируем хэш-индекс входа по @username и номеру телефона для всех профилей (v51)
+    Promise.all(allProfiles.map((p) => syncProfileLoginIndexEntry(p))).catch(() => {});
 
     if (activeRoom) {
       const updatedActive = myRooms.find((r) => r.id === activeRoom.id);
@@ -7435,7 +7658,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=50').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=51').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

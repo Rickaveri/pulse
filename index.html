@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=50" />
+  <link rel="stylesheet" href="./styles.css?v=51" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="this.onerror=null;this.src='https://unpkg.com/@supabase/supabase-js@2';"></script>
-  <script src="./config.js?v=50"></script>
+  <script src="./config.js?v=51"></script>
 </head>
 <body>
 
@@ -74,8 +74,8 @@
         </div>
 
         <div class="field-group">
-          <label for="emailInput">Электронная почта</label>
-          <input id="emailInput" class="input-field" type="email" required placeholder="alex@example.com" />
+          <label id="emailInputLabel" for="emailInput">Почта, @username или номер телефона</label>
+          <input id="emailInput" class="input-field" type="text" required placeholder="Email, @username или 8 999 123-45-67" autocomplete="username" />
         </div>
 
         <div class="field-group">
@@ -129,11 +129,15 @@
 
   <!-- Модальное окно установки нового пароля после перехода по ссылке сброса из письма -->
   <div id="resetPwdModal" class="modal-backdrop hidden">
-    <div class="auth-card" style="max-width:360px;">
-      <h2 style="font-size:18px; margin-bottom:6px;">🔑 Новый пароль</h2>
-      <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px; line-height:1.45;">
-        Придумайте и подтвердите новый пароль для вашего аккаунта:
+    <div class="auth-card" style="max-width:375px;">
+      <h2 style="font-size:18px; margin-bottom:6px;">🔑 Сброс и установка пароля</h2>
+      <p id="resetPwdHelpText" style="font-size:12.5px; color:var(--text-muted); margin-bottom:12px; line-height:1.45;">
+        Если при нажатии на ссылку в письме открылся <strong>localhost:3000</strong>, просто скопируйте ту ссылку из адресной строки браузера (или из письма) и вставьте в первое поле ниже:
       </p>
+      <div id="recoveryTokenGroup" class="field-group">
+        <label for="recoveryTokenOrUrlInput">Ссылка из письма (даже с localhost:3000) или код</label>
+        <input id="recoveryTokenOrUrlInput" class="input-field" type="text" placeholder="Вставьте скопированную ссылку из письма..." autocomplete="off" />
+      </div>
       <div class="field-group">
         <label for="newResetPasswordInput">Новый пароль</label>
         <div class="input-wrapper">
@@ -864,7 +868,7 @@
     </div>
   </div>
 
-  <script src="./app.js?v=50"></script>
-  <script src="./enhancements.js?v=50"></script>
+  <script src="./app.js?v=51"></script>
+  <script src="./enhancements.js?v=51"></script>
 </body>
 </html>
