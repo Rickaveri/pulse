@@ -32,6 +32,21 @@
   const phoneInput = document.getElementById('phoneInput');
   const emailInput = document.getElementById('emailInput');
   const passwordInput = document.getElementById('passwordInput');
+  const togglePwdBtn = document.getElementById('togglePwdBtn');
+  const passwordConfirmGroup = document.getElementById('passwordConfirmGroup');
+  const passwordConfirmInput = document.getElementById('passwordConfirmInput');
+  const togglePwdConfirmBtn = document.getElementById('togglePwdConfirmBtn');
+  const pwdMatchHint = document.getElementById('pwdMatchHint');
+  const forgotPasswordRow = document.getElementById('forgotPasswordRow');
+  const forgotPasswordBtn = document.getElementById('forgotPasswordBtn');
+  const resetPwdModal = document.getElementById('resetPwdModal');
+  const newResetPasswordInput = document.getElementById('newResetPasswordInput');
+  const toggleNewResetPwdBtn = document.getElementById('toggleNewResetPwdBtn');
+  const newResetPasswordConfirmInput = document.getElementById('newResetPasswordConfirmInput');
+  const toggleNewResetPwdConfirmBtn = document.getElementById('toggleNewResetPwdConfirmBtn');
+  const resetPwdStatus = document.getElementById('resetPwdStatus');
+  const saveNewResetPwdBtn = document.getElementById('saveNewResetPwdBtn');
+  const cancelResetPwdModalBtn = document.getElementById('cancelResetPwdModalBtn');
   const pwdMeter = document.getElementById('pwdMeter');
   const pwdBars = [
     document.getElementById('pwdBar1'),
@@ -1917,13 +1932,97 @@
   }
 
   // 6. Инициализация Supabase и авторизация
+  let recoveryListenerBound = false;
+
   function initSupabase() {
     const cfg = window.MESSENGER_CONFIG || {};
     const url = (cfg.SUPABASE_URL || '').trim();
     const key = (cfg.SUPABASE_ANON_KEY || '').trim();
     if (!url || !key || !window.supabase) return false;
-    supabaseClient = window.supabase.createClient(url, key);
+    if (!supabaseClient) {
+      supabaseClient = window.supabase.createClient(url, key);
+    }
+    if (supabaseClient && !recoveryListenerBound) {
+      recoveryListenerBound = true;
+      supabaseClient.auth.onAuthStateChange((event) => {
+        if (event === 'PASSWORD_RECOVERY' && resetPwdModal) {
+          resetPwdModal.classList.remove('hidden');
+          if (newResetPasswordInput) newResetPasswordInput.value = '';
+          if (newResetPasswordConfirmInput) newResetPasswordConfirmInput.value = '';
+          if (resetPwdStatus) resetPwdStatus.classList.add('hidden');
+        }
+      });
+      if (window.location.hash && window.location.hash.includes('type=recovery') && resetPwdModal) {
+        resetPwdModal.classList.remove('hidden');
+      }
+    }
     return true;
+  }
+
+  async function ensureSupabaseReady() {
+    if (supabaseClient || initSupabase()) return true;
+    return new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/@supabase/supabase-js@2';
+      script.onload = () => resolve(initSupabase());
+      script.onerror = () => resolve(false);
+      document.head.appendChild(script);
+    });
+  }
+
+  function bindPasswordToggle(btn, inputEl) {
+    if (!btn || !inputEl) return;
+    btn.addEventListener('click', () => {
+      triggerHaptic('light');
+      const isHidden = inputEl.type === 'password';
+      inputEl.type = isHidden ? 'text' : 'password';
+      const eyeOpen = btn.querySelector('.eye-open');
+      const eyeOff = btn.querySelector('.eye-off');
+      if (eyeOpen) eyeOpen.classList.toggle('hidden', isHidden);
+      if (eyeOff) eyeOff.classList.toggle('hidden', !isHidden);
+    });
+  }
+
+  bindPasswordToggle(togglePwdBtn, passwordInput);
+  bindPasswordToggle(togglePwdConfirmBtn, passwordConfirmInput);
+  bindPasswordToggle(toggleNewResetPwdBtn, newResetPasswordInput);
+  bindPasswordToggle(toggleNewResetPwdConfirmBtn, newResetPasswordConfirmInput);
+
+  function updatePasswordMatchHint() {
+    if (!pwdMatchHint || !passwordConfirmInput) return;
+    if (authMode !== 'register' || !passwordConfirmInput.value) {
+      pwdMatchHint.classList.add('hidden');
+      return;
+    }
+    pwdMatchHint.classList.remove('hidden');
+    if (passwordInput.value === passwordConfirmInput.value) {
+      pwdMatchHint.textContent = '✓ Пароли совпадают';
+      pwdMatchHint.className = 'pwd-match-hint match';
+    } else {
+      pwdMatchHint.textContent = '✕ Пароли пока не совпадают';
+      pwdMatchHint.className = 'pwd-match-hint mismatch';
+    }
+  }
+
+  if (passwordInput) passwordInput.addEventListener('input', updatePasswordMatchHint);
+  if (passwordConfirmInput) passwordConfirmInput.addEventListener('input', updatePasswordMatchHint);
+
+  function translateAuthErrorMessage(rawMessage) {
+    const msg = String(rawMessage || '').trim();
+    const low = msg.toLowerCase();
+    if (low.includes('user already registered') || low.includes('already been registered')) {
+      return 'Этот email уже зарегистрирован! Переключитесь на вкладку «Вход» сверху или нажмите «Забыли пароль? Сбросить на почту».';
+    }
+    if (low.includes('invalid login credentials') || low.includes('invalid_credentials')) {
+      return 'Неверный пароль или почта. Нажмите на иконку глазика 👁️ справа в поле пароля, чтобы проверить введённые символы, или нажмите «Забыли пароль?».';
+    }
+    if (low.includes('email rate limit') || low.includes('security purposes you can only request this')) {
+      return 'Письмо уже отправлено. Подождите минуту перед повторным запросом и проверьте папку «Входящие» и «Спам».';
+    }
+    if (low.includes('failed to fetch') || low.includes('network')) {
+      return 'Слабое интернет-соединение. Проверьте сеть и попробуйте ещё раз.';
+    }
+    return msg || 'Ошибка авторизации';
   }
 
   function showAuthStatus(msg, type = 'info') {
@@ -1938,6 +2037,8 @@
     tabRegister.classList.remove('active');
     registerFields.classList.add('hidden');
     pwdMeter.classList.add('hidden');
+    if (passwordConfirmGroup) passwordConfirmGroup.classList.add('hidden');
+    if (forgotPasswordRow) forgotPasswordRow.classList.remove('hidden');
     authSubmitBtn.textContent = 'Войти';
     authStatus.classList.add('hidden');
   });
@@ -1948,19 +2049,99 @@
     tabLogin.classList.remove('active');
     registerFields.classList.remove('hidden');
     pwdMeter.classList.remove('hidden');
+    if (passwordConfirmGroup) passwordConfirmGroup.classList.remove('hidden');
+    if (forgotPasswordRow) forgotPasswordRow.classList.add('hidden');
+    updatePasswordMatchHint();
     authSubmitBtn.textContent = 'Создать защищённый аккаунт';
     authStatus.classList.add('hidden');
   });
 
+  if (forgotPasswordBtn) {
+    forgotPasswordBtn.addEventListener('click', async () => {
+      triggerHaptic('light');
+      const email = (emailInput.value || '').trim();
+      if (!email || !email.includes('@')) {
+        showAuthStatus('Сначала введите вашу электронную почту в поле выше, а затем нажмите «Забыли пароль?».', 'error');
+        emailInput.focus();
+        return;
+      }
+      if (!(await ensureSupabaseReady())) {
+        showAuthStatus('Не удалось подключиться к серверу. Проверьте интернет и обновите страницу.', 'error');
+        return;
+      }
+      forgotPasswordBtn.disabled = true;
+      showAuthStatus('Отправляем ссылку для сброса пароля на вашу почту...', 'info');
+      try {
+        const redirectUrl = window.location.origin + window.location.pathname;
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+          redirectTo: redirectUrl
+        });
+        if (error) throw error;
+        showAuthStatus(
+          `Письмо со ссылкой для сброса пароля отправлено на ${email}! Откройте письмо (проверьте и папку «Спам») и нажмите на ссылку.`,
+          'info'
+        );
+      } catch (err) {
+        showAuthStatus(translateAuthErrorMessage(err.message), 'error');
+      } finally {
+        forgotPasswordBtn.disabled = false;
+      }
+    });
+  }
+
+  if (cancelResetPwdModalBtn && resetPwdModal) {
+    cancelResetPwdModalBtn.addEventListener('click', () => {
+      resetPwdModal.classList.add('hidden');
+    });
+  }
+
+  if (saveNewResetPwdBtn && resetPwdModal) {
+    saveNewResetPwdBtn.addEventListener('click', async () => {
+      const newPwd = newResetPasswordInput ? newResetPasswordInput.value : '';
+      const confirmPwd = newResetPasswordConfirmInput ? newResetPasswordConfirmInput.value : '';
+      const showResetMsg = (text, kind = 'error') => {
+        if (!resetPwdStatus) return;
+        resetPwdStatus.textContent = text;
+        resetPwdStatus.className = `status-banner ${kind}`;
+        resetPwdStatus.classList.remove('hidden');
+      };
+      if (!newPwd || newPwd.length < 8) {
+        showResetMsg('Новый пароль должен содержать минимум 8 символов.');
+        return;
+      }
+      if (newPwd !== confirmPwd) {
+        showResetMsg('Введённые пароли не совпадают! Проверьте оба поля.');
+        return;
+      }
+      saveNewResetPwdBtn.disabled = true;
+      showResetMsg('Сохраняем новый пароль...', 'info');
+      try {
+        const { error } = await supabaseClient.auth.updateUser({ password: newPwd });
+        if (error) throw error;
+        resetPwdModal.classList.add('hidden');
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+        showAuthStatus('Новый пароль успешно сохранён! Выполняется вход...', 'info');
+        await bootSession();
+      } catch (err) {
+        showResetMsg(translateAuthErrorMessage(err.message));
+      } finally {
+        saveNewResetPwdBtn.disabled = false;
+      }
+    });
+  }
+
   authForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (!supabaseClient && !initSupabase()) {
-      showAuthStatus('Ошибка конфигурации Supabase в config.js', 'error');
+    if (!(await ensureSupabaseReady())) {
+      showAuthStatus('Не удалось загрузить модуль подключения (проверьте интернет или обновите страницу).', 'error');
       return;
     }
 
     const email = emailInput.value.trim();
     const password = passwordInput.value;
+    const confirmPassword = passwordConfirmInput ? passwordConfirmInput.value : password;
     const nameVal = displayNameInput.value.trim();
     const handleVal = sanitizeUsername(usernameInput.value);
     const phoneVal = normalizePhone(phoneInput.value);
@@ -1980,6 +2161,11 @@
           'Пароль слишком простой! Выполните все 4 пункта надёжности (буквы разного регистра, цифры, спецсимвол и отсутствие простых последовательностей вроде 12345678).',
           'error'
         );
+        return;
+      }
+      if (password !== confirmPassword) {
+        showAuthStatus('Пароли не совпадают! Введите одинаковый пароль в оба поля (можно нажать на 👁️ для проверки).', 'error');
+        if (passwordConfirmInput) passwordConfirmInput.focus();
         return;
       }
     }
@@ -2022,7 +2208,7 @@
         }
 
         if (data.user && !data.session) {
-          showAuthStatus('Аккаунт создан! Теперь войдите (или отключите Confirm sign up в Supabase).', 'info');
+          showAuthStatus('Аккаунт создан! Теперь войдите на вкладке «Вход».', 'info');
           authSubmitBtn.disabled = false;
           return;
         }
@@ -2033,7 +2219,7 @@
 
       await bootSession();
     } catch (err) {
-      showAuthStatus(err.message || 'Ошибка авторизации', 'error');
+      showAuthStatus(translateAuthErrorMessage(err.message), 'error');
     } finally {
       authSubmitBtn.disabled = false;
     }
@@ -7249,7 +7435,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=49').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=50').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
@@ -7259,7 +7445,7 @@
     });
   }
 
-  if (initSupabase()) {
-    bootSession();
-  }
+  ensureSupabaseReady().then((ok) => {
+    if (ok) bootSession();
+  });
 })();

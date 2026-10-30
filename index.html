@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=49" />
+  <link rel="stylesheet" href="./styles.css?v=50" />
   <title>Pulse — Защищённый мессенджер</title>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js?v=49"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="this.onerror=null;this.src='https://unpkg.com/@supabase/supabase-js@2';"></script>
+  <script src="./config.js?v=50"></script>
 </head>
 <body>
 
@@ -80,7 +80,17 @@
 
         <div class="field-group">
           <label for="passwordInput">Пароль</label>
-          <input id="passwordInput" class="input-field" type="password" required placeholder="Введите надёжный пароль" />
+          <div class="input-wrapper">
+            <input id="passwordInput" class="input-field with-suffix" type="password" required placeholder="Введите надёжный пароль" />
+            <button id="togglePwdBtn" class="pwd-toggle-btn" type="button" title="Показать или скрыть пароль" aria-label="Показать пароль">
+              <svg class="eye-open" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-off hidden" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
+
+          <div id="forgotPasswordRow" class="forgot-pwd-row">
+            <button id="forgotPasswordBtn" class="forgot-pwd-link" type="button">Забыли пароль? Сбросить на почту</button>
+          </div>
 
           <div id="pwdMeter" class="pwd-meter hidden">
             <div class="pwd-bars">
@@ -98,10 +108,55 @@
           </div>
         </div>
 
+        <div id="passwordConfirmGroup" class="field-group hidden">
+          <label for="passwordConfirmInput">Повторите пароль</label>
+          <div class="input-wrapper">
+            <input id="passwordConfirmInput" class="input-field with-suffix" type="password" placeholder="Введите пароль ещё раз" />
+            <button id="togglePwdConfirmBtn" class="pwd-toggle-btn" type="button" title="Показать или скрыть пароль" aria-label="Показать повтор пароля">
+              <svg class="eye-open" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-off hidden" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
+          <div id="pwdMatchHint" class="pwd-match-hint hidden"></div>
+        </div>
+
         <button id="authSubmitBtn" class="btn-primary" type="submit">Войти</button>
       </form>
 
       <div id="authStatus" class="status-banner info hidden"></div>
+    </div>
+  </div>
+
+  <!-- Модальное окно установки нового пароля после перехода по ссылке сброса из письма -->
+  <div id="resetPwdModal" class="modal-backdrop hidden">
+    <div class="auth-card" style="max-width:360px;">
+      <h2 style="font-size:18px; margin-bottom:6px;">🔑 Новый пароль</h2>
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px; line-height:1.45;">
+        Придумайте и подтвердите новый пароль для вашего аккаунта:
+      </p>
+      <div class="field-group">
+        <label for="newResetPasswordInput">Новый пароль</label>
+        <div class="input-wrapper">
+          <input id="newResetPasswordInput" class="input-field with-suffix" type="password" placeholder="Минимум 8 символов" />
+          <button id="toggleNewResetPwdBtn" class="pwd-toggle-btn" type="button" title="Показать или скрыть пароль">
+            <svg class="eye-open" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field-group">
+        <label for="newResetPasswordConfirmInput">Повторите новый пароль</label>
+        <div class="input-wrapper">
+          <input id="newResetPasswordConfirmInput" class="input-field with-suffix" type="password" placeholder="Введите новый пароль ещё раз" />
+          <button id="toggleNewResetPwdConfirmBtn" class="pwd-toggle-btn" type="button" title="Показать или скрыть пароль">
+            <svg class="eye-open" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-off hidden" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="resetPwdStatus" class="status-banner info hidden" style="margin-bottom:10px;"></div>
+      <button id="saveNewResetPwdBtn" class="btn-primary" type="button">Сохранить новый пароль</button>
+      <button id="cancelResetPwdModalBtn" class="btn-ghost" type="button">Отмена</button>
     </div>
   </div>
 
@@ -809,7 +864,7 @@
     </div>
   </div>
 
-  <script src="./app.js?v=49"></script>
-  <script src="./enhancements.js?v=49"></script>
+  <script src="./app.js?v=50"></script>
+  <script src="./enhancements.js?v=50"></script>
 </body>
 </html>
