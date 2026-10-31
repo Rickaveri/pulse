@@ -1637,8 +1637,9 @@
   if (shareInviteBtn) {
     shareInviteBtn.addEventListener('click', async () => {
       triggerHaptic('light');
-      const shareUrl = 'https://rickaveri.github.io/pulse/';
-      const shareText = `Добавляйся ко мне в защищённый мессенджер Pulse! Мой никнейм: @${currentUser ? currentUser.username : ''}`;
+      const handleParam = currentUser && currentUser.username ? `?contact=${encodeURIComponent(currentUser.username)}` : '';
+      const shareUrl = `https://rickaveri.github.io/pulse/${handleParam}`;
+      const shareText = `Напиши мне в защищённом мессенджере Pulse (@${currentUser ? currentUser.username : ''}):`;
       if (navigator.share) {
         try {
           await navigator.share({ title: 'Pulse Messenger', text: shareText, url: shareUrl });
@@ -1647,9 +1648,9 @@
       }
       try {
         await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`);
-        alert('Ссылка и ваш @username скопированы в буфер обмена!');
+        alert('Персональная ссылка-приглашение скопирована! При переходе по ней у друга сразу откроется чат с вами.');
       } catch (e) {
-        prompt('Скопируйте ссылку для приглашения друга:', shareUrl);
+        prompt('Скопируйте вашу персональную ссылку для приглашения:', shareUrl);
       }
     });
   }
@@ -2564,12 +2565,30 @@
     subscribeRealtime();
     registerAndSaveWebPushSubscription();
 
+    // Автоматическое открытие диалога по персональной ссылке или QR-коду (?contact=username)
+    try {
+      const urlParams = new URLSearchParams(window.location.search || '');
+      const rawContact = urlParams.get('contact') || urlParams.get('user') || localStorage.getItem('pulse_pending_contact') || '';
+      if (rawContact) {
+        localStorage.removeItem('pulse_pending_contact');
+        const cleanTarget = sanitizeUsername(rawContact);
+        const targetPeer = allProfiles.find((p) => p.id !== currentUser.id && sanitizeUsername(p.username) === cleanTarget);
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+        if (targetPeer) {
+          await openOrCreateDirectMessage(targetPeer);
+        }
+      }
+    } catch (e) {}
+
     roomMessagesCache.forEach((msgs) => {
       (msgs || []).forEach((m) => { if (m && m.id) notifiedMsgIds.add(m.id); });
     });
 
     let lastPolledIso = new Date(Date.now() - 15000).toISOString();
     let pollTick = 0;
+    // Экономный резервный опрос раз в 16 сек (основная доставка идёт мгновенно за 0 мс по WebSocket Realtime) — снижает Log Ingestion в 5 раз (v52)
     setInterval(async () => {
       if (!currentUser || !supabaseClient || document.hidden) return;
       try {
@@ -2607,15 +2626,15 @@
           await preloadAllRoomsMessages();
         }
       } catch (e) {}
-    }, 3200);
+    }, 16000);
 
     setInterval(async () => {
-      if (!currentUser || !supabaseClient) return;
+      if (!currentUser || !supabaseClient || document.hidden) return;
       await supabaseClient
         .from('profiles')
         .update({ last_seen: new Date().toISOString() })
         .eq('id', currentUser.id);
-    }, 45000);
+    }, 60000);
   }
 
   document.addEventListener('visibilitychange', async () => {
@@ -7655,10 +7674,17 @@
     processV20Messages();
   }
 
+  // Сохраняем ?contact=username до входа, если друг перешёл по ссылке или QR-коду до авторизации
+  try {
+    const initParams = new URLSearchParams(window.location.search || '');
+    const initContact = initParams.get('contact') || initParams.get('user');
+    if (initContact) localStorage.setItem('pulse_pending_contact', initContact);
+  } catch (e) {}
+
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=51').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=52').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

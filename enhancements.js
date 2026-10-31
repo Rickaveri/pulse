@@ -185,12 +185,20 @@
     });
   }
 
-  // 6. QR-визитка профиля в Настройках
+  // 6. Персональная QR-визитка профиля в Настройках (?contact=username)
   if (showQrCardBtn && qrInviteModal) {
     showQrCardBtn.addEventListener('click', () => {
       haptic('light');
-      if (qrHandleLabel && myHandle) {
-        qrHandleLabel.textContent = myHandle.textContent || '@username';
+      const rawHandleText = (myHandle ? myHandle.textContent : '') || '@username';
+      const handleOnly = rawHandleText.split('•')[0].trim();
+      const cleanUser = handleOnly.replace(/^@+/, '').trim();
+      if (qrHandleLabel) {
+        qrHandleLabel.textContent = handleOnly;
+      }
+      const qrImg = qrInviteModal.querySelector('img');
+      if (qrImg && cleanUser) {
+        const personalUrl = `https://rickaveri.github.io/pulse/?contact=${encodeURIComponent(cleanUser)}`;
+        qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(personalUrl)}`;
       }
       qrInviteModal.classList.remove('hidden');
     });
@@ -688,7 +696,7 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=51').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=52').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });
