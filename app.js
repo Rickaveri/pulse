@@ -2805,9 +2805,54 @@
   });
 
   // 8. Закрытая видимость чатов и поиск по @username и номеру телефона
+  function getLocallyDeletedRoomsMap() {
+    try {
+      return JSON.parse(localStorage.getItem('pulse_deleted_rooms_v1') || '{}');
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setLocallyDeletedRoom(roomId, deletedAtMs) {
+    const map = getLocallyDeletedRoomsMap();
+    if (deletedAtMs) {
+      map[roomId] = deletedAtMs;
+    } else {
+      delete map[roomId];
+    }
+    localStorage.setItem('pulse_deleted_rooms_v1', JSON.stringify(map));
+  }
+
+  function getEffectiveGroupMemberIds(room) {
+    if (!room || !room.is_group) return [];
+    try {
+      const overrideRaw = localStorage.getItem(`pulse_grp_members_${room.id}`);
+      if (overrideRaw) {
+        const parsed = JSON.parse(overrideRaw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    const dk = room.direct_key || '';
+    if (dk.startsWith('grp|')) {
+      return (dk.split('|')[1] || '').split(',').filter(Boolean);
+    }
+    return room.created_by ? [room.created_by] : [];
+  }
+
   function isRoomVisibleToCurrentUser(room) {
     if (!room || !currentUser) return false;
     if (room.id === LEGACY_PUBLIC_ROOM_ID) return false;
+
+    const deletedMap = getLocallyDeletedRoomsMap();
+    if (deletedMap[room.id]) {
+      const latestSummary = roomSummaryMap.get(room.id);
+      const latestTs = latestSummary && latestSummary.timestamp ? latestSummary.timestamp : 0;
+      // Если диалог или группа были удалены, скрываем их (а если в личный диалог пришло новое сообщение после удаления — возвращаем автоматически)
+      if (room.is_group || latestTs <= deletedMap[room.id]) {
+        return false;
+      }
+      setLocallyDeletedRoom(room.id, 0);
+    }
 
     const dk = room.direct_key || '';
     if (dk.startsWith('saved_')) {
@@ -2818,10 +2863,9 @@
       return parts.includes(currentUser.id);
     }
     if (room.is_group) {
-      if (dk.startsWith('grp|')) {
-        const memberPart = dk.split('|')[1] || '';
-        const memberIds = memberPart.split(',').filter(Boolean);
-        return memberIds.includes(currentUser.id) || room.created_by === currentUser.id;
+      const memberIds = getEffectiveGroupMemberIds(room);
+      if (memberIds.length > 0) {
+        return memberIds.includes(currentUser.id);
       }
       return room.created_by === currentUser.id;
     }
@@ -2881,10 +2925,17 @@
     if (!room.is_group) {
       const peer = getPeerForDirectRoom(room);
       if (peer) {
-        const isTyping = isRoomTyping(room.id);
+        const actInfo = getRoomActivityInfo(room.id);
+        const isTyping = Boolean(actInfo);
+        const actLabel =
+          actInfo && actInfo.activity === 'voice'
+            ? '🎤 записывает голосовое...'
+            : actInfo && actInfo.activity === 'video'
+            ? '📹 записывает видеокружок...'
+            : 'печатает...';
         return {
           title: peer.display_name,
-          subtitle: isTyping ? 'печатает...' : formatPresenceStatus(peer),
+          subtitle: isTyping ? actLabel : formatPresenceStatus(peer),
           isTyping,
           letter: peer.display_name[0] || '@',
           color: peer.color || '#6366f1',
@@ -2896,15 +2947,24 @@
     }
 
     let memberCountText = 'Закрытая группа';
-    if (dk.startsWith('grp|')) {
-      const ids = (dk.split('|')[1] || '').split(',').filter(Boolean);
-      memberCountText = `Закрытая группа • ${ids.length} участн.`;
+    const grpMemberIds = getEffectiveGroupMemberIds(room);
+    if (grpMemberIds.length > 0) {
+      memberCountText = `Закрытая группа • ${grpMemberIds.length} участн.`;
     }
 
-    const isTyping = isRoomTyping(room.id);
+    const actInfo = getRoomActivityInfo(room.id);
+    const isTyping = Boolean(actInfo);
+    const actorProf = actInfo ? allProfiles.find((p) => p.id === actInfo.userId) : null;
+    const actorName = (actorProf && actorProf.display_name) || (actInfo && actInfo.userName) || 'Участник';
+    const grpActLabel =
+      actInfo && actInfo.activity === 'voice'
+        ? `🎤 ${actorName} записывает голосовое...`
+        : actInfo && actInfo.activity === 'video'
+        ? `📹 ${actorName} записывает кружочек...`
+        : `${actorName} печатает...`;
     return {
       title: room.name || 'Группа',
-      subtitle: isTyping ? 'кто-то печатает...' : memberCountText,
+      subtitle: isTyping ? grpActLabel : memberCountText,
       isTyping,
       letter: (room.name || 'Г')[0],
       color: '#10b981',
@@ -2914,14 +2974,18 @@
     };
   }
 
-  function isRoomTyping(roomId) {
+  function getRoomActivityInfo(roomId) {
     const entry = typingByRoom.get(roomId);
-    if (!entry) return false;
-    if (Date.now() - entry.ts > 3500) {
+    if (!entry) return null;
+    if (Date.now() - entry.ts > 3800) {
       typingByRoom.delete(roomId);
-      return false;
+      return null;
     }
-    return true;
+    return entry;
+  }
+
+  function isRoomTyping(roomId) {
+    return Boolean(getRoomActivityInfo(roomId));
   }
 
   function renderSidebarList() {
@@ -3426,6 +3490,49 @@
       peerBio.classList.add('hidden');
     }
 
+    const groupMembersManageSection = document.getElementById('groupMembersManageSection');
+    const groupCurrentMembersList = document.getElementById('groupCurrentMembersList');
+    const deleteOrLeaveRoomBtn = document.getElementById('deleteOrLeaveRoomBtn');
+
+    if (deleteOrLeaveRoomBtn) {
+      const isSaved = (activeRoom.direct_key || '').startsWith('saved_');
+      deleteOrLeaveRoomBtn.classList.toggle('hidden', isSaved);
+      deleteOrLeaveRoomBtn.textContent = activeRoom.is_group
+        ? '🚪 Выйти из группы / Удалить группу'
+        : '🗑️ Удалить диалог';
+    }
+
+    if (groupMembersManageSection && groupCurrentMembersList) {
+      if (activeRoom.is_group) {
+        groupMembersManageSection.classList.remove('hidden');
+        groupCurrentMembersList.innerHTML = '';
+        const currentMemberSet = new Set(getEffectiveGroupMemberIds(activeRoom));
+        const knownIds = new Set(currentMemberSet);
+        myRooms.forEach((r) => {
+          const dk = r.direct_key || '';
+          if (!r.is_group && !dk.startsWith('saved_')) {
+            dk.split('_').forEach((uid) => { if (uid) knownIds.add(uid); });
+          } else if (r.is_group) {
+            getEffectiveGroupMemberIds(r).forEach((uid) => { if (uid) knownIds.add(uid); });
+          }
+        });
+        const candidateProfiles = allProfiles.filter((p) => knownIds.has(p.id));
+        candidateProfiles.forEach((person) => {
+          const isMe = person.id === currentUser.id;
+          const isChecked = currentMemberSet.has(person.id);
+          const label = document.createElement('label');
+          label.className = 'member-option';
+          label.innerHTML = `
+            <input type="checkbox" value="${escapeHtml(person.id)}" ${isChecked ? 'checked' : ''} ${isMe ? 'disabled' : ''} />
+            <span><strong>${escapeHtml(person.display_name)}${isMe ? ' (Вы)' : ''}</strong> <small style="color:var(--text-muted);">@${escapeHtml(person.username)}</small></span>
+          `;
+          groupCurrentMembersList.appendChild(label);
+        });
+      } else {
+        groupMembersManageSection.classList.add('hidden');
+      }
+    }
+
     if (sharedMediaGrid) {
       sharedMediaGrid.innerHTML = '';
       const mediaMsgs = roomMessages.filter((m) => Boolean(m.media_url));
@@ -3470,6 +3577,125 @@
 
     peerModal.classList.remove('hidden');
   });
+
+  const saveGroupMembersBtn = document.getElementById('saveGroupMembersBtn');
+  if (saveGroupMembersBtn) {
+    saveGroupMembersBtn.addEventListener('click', async () => {
+      if (!activeRoom || !activeRoom.is_group) return;
+      triggerHaptic('medium');
+      const groupCurrentMembersList = document.getElementById('groupCurrentMembersList');
+      if (!groupCurrentMembersList) return;
+      const checkedIds = Array.from(groupCurrentMembersList.querySelectorAll('input[type="checkbox"]:checked')).map((cb) => cb.value);
+      const updatedMembers = Array.from(new Set([currentUser.id, ...checkedIds])).sort();
+      const newDirectKey = `grp|${updatedMembers.join(',')}|${Date.now()}`;
+
+      saveGroupMembersBtn.disabled = true;
+      saveGroupMembersBtn.textContent = 'Сохранение...';
+      try {
+        localStorage.setItem(`pulse_grp_members_${activeRoom.id}`, JSON.stringify(updatedMembers));
+        activeRoom.direct_key = newDirectKey;
+        await supabaseClient.from('rooms').update({ direct_key: newDirectKey }).eq('id', activeRoom.id);
+        if (realtimeChannel) {
+          realtimeChannel.send({
+            type: 'broadcast',
+            event: 'room-control',
+            payload: { action: 'group-members', room_id: activeRoom.id, members: updatedMembers, direct_key: newDirectKey }
+          }).catch(() => {});
+        }
+        updateActiveRoomHeader();
+        renderSidebarList();
+        saveBootSnapshotToStorage();
+        peerModal.classList.add('hidden');
+        showInAppToast({
+          title: 'Состав группы обновлён ✓',
+          text: `Участников в группе: ${updatedMembers.length}`,
+          peer: null,
+          roomId: activeRoom.id
+        });
+      } catch (e) {
+      } finally {
+        saveGroupMembersBtn.disabled = false;
+        saveGroupMembersBtn.textContent = 'Сохранить состав группы';
+      }
+    });
+  }
+
+  const clearChatHistoryBtn = document.getElementById('clearChatHistoryBtn');
+  if (clearChatHistoryBtn) {
+    clearChatHistoryBtn.addEventListener('click', async () => {
+      if (!activeRoom) return;
+      triggerHaptic('medium');
+      if (!confirm('Очистить всю историю сообщений в этом чате?')) return;
+      const targetRoomId = activeRoom.id;
+      const allIdsToHide = (roomMessagesCache.get(targetRoomId) || []).map((m) => m.id);
+      allIdsToHide.forEach((mid) => hideMsgLocally(mid));
+      try {
+        await supabaseClient
+          .from('messages')
+          .delete()
+          .eq('room_id', targetRoomId)
+          .eq('sender_id', currentUser.id);
+      } catch (e) {}
+      roomMessages = [];
+      roomMessagesCache.set(targetRoomId, []);
+      roomSummaryMap.set(targetRoomId, { preview: 'История очищена', timeStr: '', timestamp: Date.now() });
+      peerModal.classList.add('hidden');
+      await renderMessages(targetRoomId, true);
+      renderSidebarList();
+      saveBootSnapshotToStorage();
+    });
+  }
+
+  const deleteOrLeaveRoomBtn = document.getElementById('deleteOrLeaveRoomBtn');
+  if (deleteOrLeaveRoomBtn) {
+    deleteOrLeaveRoomBtn.addEventListener('click', async () => {
+      if (!activeRoom) return;
+      triggerHaptic('heavy');
+      const isGrp = Boolean(activeRoom.is_group);
+      const promptText = isGrp
+        ? 'Выйти из этой группы и удалить её из списка ваших чатов?'
+        : 'Удалить этот диалог и очистить переписку?';
+      if (!confirm(promptText)) return;
+      const roomToDelete = activeRoom;
+      const rId = roomToDelete.id;
+
+      // Скрываем все текущие сообщения и помечаем чат удалённым
+      const currentMsgs = roomMessagesCache.get(rId) || [];
+      currentMsgs.forEach((m) => hideMsgLocally(m.id));
+      setLocallyDeletedRoom(rId, Date.now() + 2000);
+
+      try {
+        await supabaseClient.from('messages').delete().eq('room_id', rId).eq('sender_id', currentUser.id);
+        if (isGrp) {
+          const remaining = getEffectiveGroupMemberIds(roomToDelete).filter((uid) => uid !== currentUser.id);
+          localStorage.setItem(`pulse_grp_members_${rId}`, JSON.stringify(remaining));
+          const newDk = `grp|${remaining.join(',')}|${Date.now()}`;
+          await supabaseClient.from('rooms').update({ direct_key: newDk }).eq('id', rId);
+          if (realtimeChannel) {
+            realtimeChannel.send({
+              type: 'broadcast',
+              event: 'room-control',
+              payload: { action: 'group-members', room_id: rId, members: remaining, direct_key: newDk }
+            }).catch(() => {});
+          }
+        }
+      } catch (e) {}
+
+      peerModal.classList.add('hidden');
+      myRooms = myRooms.filter((r) => r.id !== rId);
+      roomMessagesCache.delete(rId);
+      roomSummaryMap.delete(rId);
+      unreadCounts.delete(rId);
+      activeRoom = null;
+      currentSelectingRoomId = null;
+      appShell.classList.remove('chat-active');
+      activeChatView.classList.add('hidden');
+      emptyChatState.classList.remove('hidden');
+      messagesViewport.innerHTML = '';
+      renderSidebarList();
+      saveBootSnapshotToStorage();
+    });
+  }
 
   if (peerHandle) {
     peerHandle.addEventListener('click', async () => {
@@ -3972,27 +4198,38 @@
             }
           });
 
+          vid.dataset.seqMedia = '1';
+          const startCirclePlayback = () => {
+            pauseOtherActiveMedia(vid);
+            vid.muted = false;
+            if (vid.ended || vid.currentTime <= 0.08) {
+              try { vid.currentTime = 0; } catch (e) {}
+            }
+            vid.playbackRate = cSpeeds[cSpeedIdx];
+            vid.play().catch(() => {});
+            const d = (isFinite(vid.duration) && vid.duration > 0) ? Math.round(vid.duration) : totalDurSec;
+            const cur = Math.floor(vid.currentTime || 0);
+            badge.textContent = d > 0 ? `⏸ ${formatSec(cur)} / ${formatSec(d)}` : '⏸ Пауза';
+          };
+          vid._startSeqPlay = startCirclePlayback;
+
           vid.addEventListener('ended', () => {
+            const wasUnmutedActive = !vid.muted;
             vid.pause();
             if (activePlayingMediaEl === vid) activePlayingMediaEl = null;
-            try { vid.currentTime = 0; } catch (e) {}
+            try { vid.currentTime = 0.05; } catch (e) {}
             scrubFill.style.width = '0%';
             badge.textContent = totalDurSec > 0 ? `▶ ${formatSec(totalDurSec)}` : '▶ Кружочек';
+            if (wasUnmutedActive) {
+              playNextSequentialMediaInChat(vid);
+            }
           });
 
           circleWrap.addEventListener('click', (ev) => {
             ev.stopPropagation();
             triggerHaptic('light');
             if (vid.paused || vid.ended) {
-              pauseOtherActiveMedia(vid);
-              if (vid.ended) {
-                try { vid.currentTime = 0; } catch (e) {}
-              }
-              vid.playbackRate = cSpeeds[cSpeedIdx];
-              vid.play().catch(() => {});
-              const d = (isFinite(vid.duration) && vid.duration > 0) ? Math.round(vid.duration) : totalDurSec;
-              const cur = Math.floor(vid.currentTime || 0);
-              badge.textContent = d > 0 ? `⏸ ${formatSec(cur)} / ${formatSec(d)}` : '⏸ Пауза';
+              startCirclePlayback();
             } else {
               vid.pause();
               if (activePlayingMediaEl === vid) activePlayingMediaEl = null;
@@ -4548,9 +4785,33 @@
     activePlayingMediaEl = newMediaEl;
   }
 
+  // Автовоспроизведение следующего голосового сообщения или видеокружочка по цепочке вниз (v53)
+  function playNextSequentialMediaInChat(finishedMediaEl) {
+    if (!messagesViewport || !finishedMediaEl) return;
+    const currentRow = finishedMediaEl.closest('.msg-row');
+    if (!currentRow) return;
+    const allRows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
+    const startIdx = allRows.indexOf(currentRow);
+    if (startIdx === -1) return;
+    for (let i = startIdx + 1; i < allRows.length; i++) {
+      const row = allRows[i];
+      const nextMedia = row.querySelector('[data-seq-media="1"]');
+      if (nextMedia && typeof nextMedia._startSeqPlay === 'function') {
+        try {
+          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (e) {}
+        setTimeout(() => {
+          nextMedia._startSeqPlay();
+        }, 180);
+        return;
+      }
+    }
+  }
+
   function buildCustomVoicePlayer(audioUrl, initialDuration) {
     const wrap = document.createElement('div');
     wrap.className = 'voice-player';
+    wrap.dataset.seqMedia = '1';
     wrap.addEventListener('click', (ev) => ev.stopPropagation());
 
     const audio = new Audio(audioUrl);
@@ -4641,22 +4902,28 @@
       playBtn.textContent = '▶';
     });
 
+    const startVoicePlayback = () => {
+      pauseOtherActiveMedia(audio);
+      audio.playbackRate = speeds[speedIdx];
+      audio.play().catch(() => {});
+      playBtn.textContent = '⏸';
+    };
+    wrap._startSeqPlay = startVoicePlayback;
+
     audio.addEventListener('ended', () => {
       playBtn.textContent = '▶';
       if (activePlayingMediaEl === audio) activePlayingMediaEl = null;
       try { audio.currentTime = 0; } catch (e) {}
       barEls.forEach((b) => b.classList.remove('played'));
       durLabel.textContent = knownTotalSec > 0 ? formatSec(knownTotalSec) : '0:00';
+      playNextSequentialMediaInChat(wrap);
     });
 
     playBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       triggerHaptic('light');
       if (audio.paused) {
-        pauseOtherActiveMedia(audio);
-        audio.playbackRate = speeds[speedIdx];
-        audio.play().catch(() => {});
-        playBtn.textContent = '⏸';
+        startVoicePlayback();
       } else {
         audio.pause();
         if (activePlayingMediaEl === audio) activePlayingMediaEl = null;
@@ -5000,6 +5267,23 @@
     return Math.floor((elapsedRecordMs + runningExtra) / 1000);
   }
 
+  let lastRecordBroadcastAt = 0;
+  function broadcastRecordingStatus(activityKind) {
+    if (!realtimeChannel || !activeRoom || !currentUser) return;
+    try {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: {
+          room_id: activeRoom.id,
+          user_id: currentUser.id,
+          user_name: currentUser.display_name || currentUser.username,
+          activity: activityKind
+        }
+      });
+    } catch (e) {}
+  }
+
   function updateRecordingTimersUI() {
     const secStr = formatSec(getElapsedRecordingSeconds());
     recordingTimer.textContent = secStr;
@@ -5007,6 +5291,10 @@
       vcStatusLabel.innerHTML = isRecordingPaused
         ? `⏸ На паузе: <span>${secStr}</span>`
         : `🔴 Запись: <span>${secStr}</span>`;
+    }
+    if (isRecording && !isRecordingPaused && (Date.now() - lastRecordBroadcastAt > 1800)) {
+      lastRecordBroadcastAt = Date.now();
+      broadcastRecordingStatus(recordMode === 'video' ? 'video' : 'voice');
     }
   }
 
@@ -5133,6 +5421,8 @@
         recDot.classList.remove('paused');
       }
 
+      lastRecordBroadcastAt = Date.now();
+      broadcastRecordingStatus(isVideo ? 'video' : 'voice');
       updateRecordingTimersUI();
       updateSmartActionButtonUI();
 
@@ -5366,6 +5656,9 @@
   vcFlipCamBtn.addEventListener('touchend', flipVideoCircleCamera, { passive: false });
 
   function cleanupRecordingUI() {
+    if (isRecording) {
+      broadcastRecordingStatus('stop');
+    }
     isRecording = false;
     isRecordingLocked = false;
     isRecordingPaused = false;
@@ -5901,14 +6194,33 @@
         if (!payload || payload.user_id === currentUser.id) return;
         const prevEntry = typingByRoom.get(payload.room_id);
         if (prevEntry && prevEntry.timerId) clearTimeout(prevEntry.timerId);
+        if (payload.activity === 'stop') {
+          typingByRoom.delete(payload.room_id);
+          updateActiveRoomHeader();
+          if (!appShell.classList.contains('chat-active')) renderSidebarList();
+          return;
+        }
         const timerId = setTimeout(() => {
           typingByRoom.delete(payload.room_id);
           updateActiveRoomHeader();
           if (!appShell.classList.contains('chat-active')) renderSidebarList();
-        }, 3400);
-        typingByRoom.set(payload.room_id, { userId: payload.user_id, ts: Date.now(), timerId });
+        }, 3600);
+        typingByRoom.set(payload.room_id, {
+          userId: payload.user_id,
+          userName: payload.user_name || '',
+          activity: payload.activity || 'typing',
+          ts: Date.now(),
+          timerId
+        });
         updateActiveRoomHeader();
         if (!appShell.classList.contains('chat-active')) renderSidebarList();
+      })
+      .on('broadcast', { event: 'room-control' }, ({ payload }) => {
+        if (!payload || !payload.room_id) return;
+        if (payload.action === 'group-members' && Array.isArray(payload.members)) {
+          localStorage.setItem(`pulse_grp_members_${payload.room_id}`, JSON.stringify(payload.members));
+          refreshDirectoryAndRooms().catch(() => {});
+        }
       })
       .on('broadcast', { event: 'call-signal' }, ({ payload }) => {
         handleIncomingCallSignal(payload);
@@ -7684,7 +7996,7 @@
   // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=52').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=53').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

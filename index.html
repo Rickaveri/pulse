@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=52" />
+  <link rel="stylesheet" href="./styles.css?v=53" />
   <title>Pulse — Защищённый мессенджер</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="this.onerror=null;this.src='https://unpkg.com/@supabase/supabase-js@2';"></script>
-  <script src="./config.js?v=52"></script>
+  <script src="./config.js?v=53"></script>
 </head>
 <body>
 
@@ -490,7 +490,7 @@
     </div>
   </div>
 
-  <!-- Модальное окно: Информация о собеседнике/диалоге + Общие фото и вложения -->
+  <!-- Модальное окно: Информация о собеседнике/диалоге + Управление группой + Очистка/удаление чата -->
   <div id="peerModal" class="modal-backdrop hidden">
     <div class="auth-card" style="text-align:center;">
       <div id="peerAvatar" class="avatar" style="width:72px; height:72px; font-size:26px; margin:0 auto 12px;">П</div>
@@ -499,12 +499,20 @@
       <p id="peerPhone" style="color:var(--text-muted); font-size:13px; margin-top:6px; cursor:pointer;" title="Нажмите, чтобы скопировать"></p>
       <p id="peerBio" class="hidden" style="color:var(--text-main); font-size:13.5px; margin-top:10px; padding:10px; background:var(--bg-input); border-radius:10px;"></p>
 
+      <div id="groupMembersManageSection" class="settings-section hidden" style="text-align:left;">
+        <div class="settings-section-title">Участники группы (отметьте друзей)</div>
+        <div id="groupCurrentMembersList" class="member-picker" style="max-height:170px; margin-bottom:8px;"></div>
+        <button id="saveGroupMembersBtn" class="btn-primary" type="button" style="padding:9px 14px; font-size:13.5px;">Сохранить состав группы</button>
+      </div>
+
       <div id="sharedMediaSection" class="settings-section" style="text-align:left;">
         <div class="settings-section-title">Вложения в этом чате (Фото и файлы)</div>
         <div id="sharedMediaGrid" class="shared-media-grid"></div>
       </div>
 
       <button id="exportChatHistoryBtn" class="btn-ghost" type="button" style="margin-top:12px; color:var(--text-main); border-color:var(--accent);">💾 Скачать историю чата (.txt)</button>
+      <button id="clearChatHistoryBtn" class="btn-ghost" type="button" style="margin-top:8px; color:var(--text-main); border-color:var(--border);">🧹 Очистить историю сообщений</button>
+      <button id="deleteOrLeaveRoomBtn" class="btn-danger" type="button" style="margin-top:8px;">🗑️ Удалить диалог</button>
       <button id="closePeerModalBtn" class="btn-ghost" type="button" style="margin-top:8px;">Закрыть</button>
     </div>
   </div>
@@ -868,7 +876,7 @@
     </div>
   </div>
 
-  <script src="./app.js?v=52"></script>
-  <script src="./enhancements.js?v=52"></script>
+  <script src="./app.js?v=53"></script>
+  <script src="./enhancements.js?v=53"></script>
 </body>
 </html>
