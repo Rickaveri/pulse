@@ -1,14 +1,15 @@
-const CACHE_NAME = 'pulse-pwa-v53';
+const CACHE_NAME = 'pulse-pwa-v54';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
+const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aObq6osNkyamzIRi6FwdLZeTbh0yV65gqmb5Y';
 
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=53',
-  './config.js?v=53',
-  './app.js?v=53',
-  './enhancements.js?v=53',
+  './styles.css?v=54',
+  './config.js?v=54',
+  './app.js?v=54',
+  './enhancements.js?v=54',
   './manifest.json'
 ];
 
@@ -189,6 +190,26 @@ self.addEventListener('push', (event) => {
   };
 
   event.waitUntil(handlePushWake());
+});
+
+// Автопродление пуш-подписки в фоне, если Apple APNs / Google FCM ротировал токен спустя сутки (v54)
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        const padding = '='.repeat((4 - (VAPID_PUBLIC_B64U.length % 4)) % 4);
+        const b64 = (VAPID_PUBLIC_B64U + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(b64);
+        const keyBytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) keyBytes[i] = raw.charCodeAt(i);
+        const newSub = await self.registration.pushManager.subscribe(
+          event.oldSubscription ? event.oldSubscription.options : { userVisibleOnly: true, applicationServerKey: keyBytes }
+        );
+        const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        clientList.forEach((c) => c.postMessage({ type: 'PUSH_SUB_RENEWED', sub: newSub ? newSub.toJSON() : null }));
+      } catch (e) {}
+    })()
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {

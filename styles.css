@@ -2481,8 +2481,14 @@ body.keyboard-open .composer {
   border-radius: 22px;
   padding: 10px 16px;
   font-size: 16px;
+  line-height: 1.38;
+  font-family: inherit;
   outline: none;
   min-width: 0;
+  resize: none;
+  max-height: 118px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .composer-input:focus {

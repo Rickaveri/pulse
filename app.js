@@ -776,8 +776,33 @@
       const subJson = await extractSubJson(sub);
       if (!subJson) return null;
 
-      // Храним только актуальный активный токен подписки без старых дубликатов, чтобы не приходило по 2 пуша
-      const trimmed = [subJson];
+      // Подтягиваем актуальный профиль из базы, чтобы не затереть пуш-токен другого устройства (например iPhone при входе с Mac) (v54)
+      const deviceTag = /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+        ? 'ios'
+        : /Android/i.test(navigator.userAgent || '')
+        ? 'android'
+        : 'desktop';
+      subJson.dev = deviceTag;
+      subJson.ts = Date.now();
+
+      let remoteSubs = Array.isArray(currentUser.push_subs) ? currentUser.push_subs : [];
+      try {
+        const { data: freshRow } = await supabaseClient
+          .from("profiles")
+          .select("*")
+          .eq("id", currentUser.id)
+          .maybeSingle();
+        const freshProf = freshRow ? unpackProfile(freshRow) : null;
+        if (freshProf && Array.isArray(freshProf.push_subs)) {
+          remoteSubs = freshProf.push_subs;
+        }
+      } catch (e) {}
+
+      // Оставляем по одному самому свежему токену на каждый тип устройства (до 4 устройств), без дубликатов endpoint
+      const filtered = remoteSubs.filter(
+        (s) => s && s.endpoint && s.endpoint !== subJson.endpoint && (!s.dev || s.dev !== deviceTag)
+      );
+      const trimmed = [...filtered.slice(-3), subJson];
 
       currentUser.push_subs = trimmed;
       const packed = packProfileMeta({
@@ -786,7 +811,8 @@
         phone: currentUser.phone,
         avatar_url: currentUser.avatar_url,
         bio: currentUser.bio,
-        push_subs: trimmed
+        push_subs: trimmed,
+        read_receipts: currentUser.read_receipts
       });
       await supabaseClient
         .from("profiles")
@@ -934,14 +960,21 @@
       for (const uid of targetRecipientIds) {
         const prof = freshList.find((p) => p.id === uid) || allProfiles.find((p) => p.id === uid);
         const rawSubs = prof && Array.isArray(prof.push_subs) ? prof.push_subs : [];
-        const subs = rawSubs.length > 1 ? [rawSubs[rawSubs.length - 1]] : rawSubs;
+        // Отправляем пуш на каждое уникальное активное устройство пользователя (iPhone + компьютер), без дубликатов endpoint (v54)
+        const seenEndpoints = new Set();
+        const subs = [];
+        for (let i = rawSubs.length - 1; i >= 0; i--) {
+          const candidate = rawSubs[i];
+          if (candidate && candidate.endpoint && candidate.keys && !seenEndpoints.has(candidate.endpoint)) {
+            seenEndpoints.add(candidate.endpoint);
+            subs.push(candidate);
+          }
+        }
         for (const sub of subs) {
-          if (!sub || !sub.endpoint || !sub.keys) continue;
           try {
             const pkt = await buildWebPushEncryptedPacket(sub, pushPayload);
             const bodyB64 = uint8ToBase64(pkt.bodyBytes);
             const workerUrl = (window.MESSENGER_CONFIG && window.MESSENGER_CONFIG.PUSH_WORKER_URL) || "https://morning-grass-d126.rikaverisestakov.workers.dev/";
-            // 0) Мгновенная 24/7 отправка через круглосуточный облачный сервер Cloudflare Workers в Apple APNs / Google FCM!
             fetch(workerUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -5004,6 +5037,7 @@
 
     triggerHaptic('light');
     messageInput.value = '';
+    messageInput.style.height = 'auto';
     setRoomDraft(activeRoom.id, '');
 
     if (editingMsg) {
@@ -5095,7 +5129,15 @@
     }
   }
 
+  function autoResizeMessageInput() {
+    if (!messageInput) return;
+    messageInput.style.height = 'auto';
+    const nextH = Math.min(118, Math.max(40, messageInput.scrollHeight));
+    messageInput.style.height = `${nextH}px`;
+  }
+
   messageInput.addEventListener('input', () => {
+    autoResizeMessageInput();
     updateSmartActionButtonUI();
     if (activeRoom && !editingMsg) {
       setRoomDraft(activeRoom.id, messageInput.value);
@@ -5112,13 +5154,12 @@
     }
   });
 
+  // Клавиша Enter / Ввод всегда переносит строку (отправка сообщения — только по кнопке-самолётику!) (v54)
   messageInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submitTextMessage();
-    } else if (e.key === 'Escape' && (replyToMsg || editingMsg)) {
+    if (e.key === 'Escape' && (replyToMsg || editingMsg)) {
       clearComposerState();
       messageInput.value = activeRoom ? getRoomDraft(activeRoom.id) : '';
+      autoResizeMessageInput();
       updateSmartActionButtonUI();
     }
   });
@@ -5207,6 +5248,9 @@
     });
   }
 
+  let isSmartPointerDown = false;
+  let smartPressStartedAt = 0;
+
   smartActionBtn.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     if (!activeRoom) return;
@@ -5216,11 +5260,14 @@
       return;
     }
 
-    if (isRecording && isRecordingLocked) {
+    // Если запись уже идёт (даже если замок не был включён после окна разрешения iOS) — нажатие на самолётик сразу отправляет её! (v54)
+    if (isRecording) {
       finishRecordingAndSend();
       return;
     }
 
+    isSmartPointerDown = true;
+    smartPressStartedAt = Date.now();
     pointerStartY = e.clientY;
     try {
       smartActionBtn.setPointerCapture(e.pointerId);
@@ -5236,7 +5283,7 @@
   smartActionBtn.addEventListener('pointermove', (e) => {
     if (!isRecording || isRecordingLocked) return;
     const deltaY = pointerStartY - e.clientY;
-    if (deltaY > 45) {
+    if (deltaY > 40) {
       isRecordingLocked = true;
       triggerHaptic('medium');
       updateSmartActionButtonUI();
@@ -5244,6 +5291,7 @@
   });
 
   function handleSmartPointerEnd() {
+    isSmartPointerDown = false;
     if (holdTimer) {
       clearTimeout(holdTimer);
       holdTimer = null;
@@ -5261,6 +5309,14 @@
 
   smartActionBtn.addEventListener('pointerup', handleSmartPointerEnd);
   smartActionBtn.addEventListener('pointercancel', handleSmartPointerEnd);
+  window.addEventListener('blur', () => {
+    // Когда на iPhone всплывает системное окно разрешения микрофона/камеры, палец отрывается от кнопки — сразу фиксируем замок!
+    isSmartPointerDown = false;
+    if (isRecording && !isRecordingLocked) {
+      isRecordingLocked = true;
+      updateSmartActionButtonUI();
+    }
+  });
 
   function getElapsedRecordingSeconds() {
     const runningExtra = isRecordingPaused ? 0 : (Date.now() - lastResumeTime);
@@ -5328,7 +5384,11 @@
       vcDrawRafId = null;
     }
     if (vcCameraTrackStream) {
-      vcCameraTrackStream.getTracks().forEach((t) => t.stop());
+      // Выключаем видео-дорожку без сброса аудио-разрешения iOS WebKit, чтобы микрофон не запрашивался повторно!
+      vcCameraTrackStream.getVideoTracks().forEach((t) => {
+        t.enabled = false;
+        t.stop();
+      });
       vcCameraTrackStream = null;
     }
   }
@@ -5363,16 +5423,22 @@
 
   async function startMediaRecording(mode) {
     if (isRecording || isFinishingRecord || !activeRoom) return;
+    const reqStartMs = Date.now();
     try {
       const isVideo = mode === 'video';
       cameraFacingMode = 'user';
 
       let recorderStream = null;
       if (isVideo) {
-        const camStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        const audioStream = await acquireVoiceStreamOnce();
+        const videoOnlyStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
           video: { facingMode: cameraFacingMode, width: { ideal: 360 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
         });
+        const camStream = new MediaStream([
+          ...videoOnlyStream.getVideoTracks(),
+          ...audioStream.getAudioTracks()
+        ]);
         vcCameraTrackStream = camStream;
         videoCirclePreview.srcObject = camStream;
         videoCirclePreview.muted = true;
@@ -5390,12 +5456,12 @@
 
         startVcCanvasDrawingLoop();
 
-        // Объединяем непрерывный поток холста (360x360 @ 24fps) и микрофона, чтобы при переключении фронталки/основной камеры запись НЕ прерывалась!
+        // Объединяем непрерывный поток холста (360x360 @ 24fps) и кэшированного микрофона!
         if (vcCanvas && typeof vcCanvas.captureStream === 'function') {
           const canvasStream = vcCanvas.captureStream(24);
           const combined = new MediaStream();
           canvasStream.getVideoTracks().forEach((t) => combined.addTrack(t));
-          camStream.getAudioTracks().forEach((t) => combined.addTrack(t));
+          audioStream.getAudioTracks().forEach((t) => combined.addTrack(t));
           recorderStream = combined;
         } else {
           recorderStream = camStream;
@@ -5408,7 +5474,9 @@
         activeMediaStream = audioStream;
         recorderStream = audioStream;
         isRecording = true;
-        isRecordingLocked = false;
+        // Если открывалось окно разрешения микрофона (>350 мс) или палец уже убран с кнопки — сразу включаем замок, чтобы запись не зависала! (v54)
+        const waitedForPermissionDialog = (Date.now() - reqStartMs) > 350;
+        isRecordingLocked = !isSmartPointerDown || waitedForPermissionDialog;
         isRecordingPaused = false;
         recordCanceled = false;
         recordedChunks = [];
@@ -5665,13 +5733,13 @@
     clearInterval(recordTimerInterval);
     stopVcCanvasLoop();
     if (activeMediaStream) {
-      if (activeMediaStream === cachedAudioStream) {
-        activeMediaStream.getAudioTracks().forEach((t) => {
-          t.enabled = false;
-        });
-      } else {
-        activeMediaStream.getTracks().forEach((t) => t.stop());
-      }
+      // Никогда не вызываем .stop() на аудио-треках из cachedAudioStream, чтобы iOS не сбрасывал разрешение микрофона! (v54)
+      activeMediaStream.getAudioTracks().forEach((t) => {
+        t.enabled = false;
+      });
+      activeMediaStream.getVideoTracks().forEach((t) => {
+        t.stop();
+      });
       activeMediaStream = null;
     }
     videoCirclePreview.srcObject = null;
@@ -7993,13 +8061,19 @@
     if (initContact) localStorage.setItem('pulse_pending_contact', initContact);
   } catch (e) {}
 
-  // Бесшовное фоновое автообновление PWA (как в Telegram, без ручных кнопок кэша)
+  // Бесшовное фоновое автообновление PWA и переподвязка пуш-токена при пробуждении (v54)
   if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      if (ev.data && ev.data.type === 'PUSH_SUB_RENEWED') {
+        registerAndSaveWebPushSubscription().catch(() => {});
+      }
+    });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=53').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=54').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
+            registerAndSaveWebPushSubscription().catch(() => {});
           }
         });
       }).catch(() => {});
