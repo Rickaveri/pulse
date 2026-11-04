@@ -2005,7 +2005,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = 'https://unpkg.com/@supabase/supabase-js@2';
+      script.src = './supabase-local.js?v=55';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -2481,6 +2481,7 @@
 
 
   const BOOT_CACHE_KEY = 'pulse_boot_cache_v43';
+  const ROOM_MSGS_CACHE_KEY = 'pulse_room_msgs_cache_v55';
 
   function saveBootSnapshotToStorage() {
     if (!currentUser) return;
@@ -2494,6 +2495,14 @@
         summaries: summariesObj
       };
       localStorage.setItem(BOOT_CACHE_KEY, JSON.stringify(snap));
+
+      const msgsSnap = {};
+      roomMessagesCache.forEach((msgs, rId) => {
+        if (Array.isArray(msgs) && msgs.length) {
+          msgsSnap[rId] = msgs.filter((m) => !m._optimistic).slice(-35);
+        }
+      });
+      localStorage.setItem(ROOM_MSGS_CACHE_KEY, JSON.stringify(msgsSnap));
     } catch (e) {}
   }
 
@@ -2509,6 +2518,17 @@
       if (snap.summaries && typeof snap.summaries === 'object') {
         Object.entries(snap.summaries).forEach(([k, v]) => roomSummaryMap.set(k, v));
       }
+      try {
+        const rawMsgs = localStorage.getItem(ROOM_MSGS_CACHE_KEY);
+        if (rawMsgs) {
+          const parsedMsgs = JSON.parse(rawMsgs);
+          if (parsedMsgs && typeof parsedMsgs === 'object') {
+            Object.entries(parsedMsgs).forEach(([rId, arr]) => {
+              if (Array.isArray(arr)) roomMessagesCache.set(rId, arr);
+            });
+          }
+        }
+      } catch (e) {}
       onlineUserIds.add(currentUser.id);
       updateMyHeaderUI();
       updateSmartActionButtonUI();
@@ -2523,18 +2543,19 @@
     }
   }
 
-  // Если в браузере уже есть сохранённая сессия — мгновенно скрываем экран входа до первого кадра!
-  if (localStorage.getItem(BOOT_CACHE_KEY)) {
-    authScreen.classList.add('hidden');
-    appShell.classList.remove('hidden');
-  }
+  // Мгновенно отрисовываем чаты и сообщения из локальной памяти телефона в первые 0 мс запуска (даже на улице без Wi-Fi / на eSIM в роуминге!)
+  tryInstantRestoreFromBootCache();
 
   async function bootSession() {
-    // Мгновенно отрисовываем сохранённый список чатов за 0 мс без мелькания окна входа и без перепрыгивания чатов!
     const restoredInstantly = tryInstantRestoreFromBootCache();
 
     const { data: sessionData } = await supabaseClient.auth.getSession();
     if (!sessionData || !sessionData.session) {
+      // Если на мобильной сети / eSIM запрос токена временно не прошёл, НЕ стираем кэш и НЕ выкидываем пользователя из чатов! (v55)
+      if (restoredInstantly && currentUser && currentUser.id) {
+        subscribeRealtime();
+        return;
+      }
       localStorage.removeItem(BOOT_CACHE_KEY);
       appShell.classList.add('hidden');
       authScreen.classList.remove('hidden');
@@ -2542,7 +2563,7 @@
     }
 
     const user = sessionData.session.user;
-    let { data: rawProf } = await supabaseClient
+    let { data: rawProf, error: profErr } = await supabaseClient
       .from('profiles')
       .select('*')
       .eq('id', user.id)
@@ -2552,7 +2573,7 @@
     const metaHandle = sanitizeUsername(user.user_metadata?.username || user.email.split('@')[0]);
     const metaPhone = normalizePhone(user.user_metadata?.phone || '');
 
-    if (!rawProf) {
+    if (!rawProf && !profErr && !restoredInstantly) {
       const packed = packProfileMeta({
         color: '#6366f1',
         username: metaHandle,
@@ -2572,7 +2593,7 @@
         .select()
         .single();
       rawProf = inserted || { id: user.id, email: user.email, display_name: metaName, avatar_color: packed };
-    } else {
+    } else if (rawProf) {
       supabaseClient
         .from('profiles')
         .update({ last_seen: new Date().toISOString() })
@@ -2580,7 +2601,9 @@
         .then(() => {}).catch(() => {});
     }
 
-    currentUser = unpackProfile(rawProf);
+    if (rawProf) {
+      currentUser = unpackProfile(rawProf);
+    }
     onlineUserIds.add(currentUser.id);
     updateMyHeaderUI();
     updateSmartActionButtonUI();
@@ -8069,7 +8092,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=54').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=55').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
@@ -8079,6 +8102,16 @@
       }).catch(() => {});
     });
   }
+
+  // При переключении между Wi-Fi и мобильной сетью / eSIM автоматически синхронизируем чаты
+  window.addEventListener('online', () => {
+    if (supabaseClient && currentUser) {
+      refreshDirectoryAndRooms(true).then(() => preloadAllRoomsMessages()).catch(() => {});
+      subscribeRealtime();
+    } else if (supabaseClient) {
+      bootSession().catch(() => {});
+    }
+  });
 
   ensureSupabaseReady().then((ok) => {
     if (ok) bootSession();

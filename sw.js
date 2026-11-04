@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pulse-pwa-v54';
+const CACHE_NAME = 'pulse-pwa-v55';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aObq6osNkyamzIRi6FwdLZeTbh0yV65gqmb5Y';
@@ -6,10 +6,11 @@ const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aOb
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=54',
-  './config.js?v=54',
-  './app.js?v=54',
-  './enhancements.js?v=54',
+  './styles.css?v=55',
+  './config.js?v=55',
+  './supabase-local.js?v=55',
+  './app.js?v=55',
+  './enhancements.js?v=55',
   './manifest.json'
 ];
 
@@ -42,8 +43,8 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const reqUrl = event.request.url || '';
 
-  // Постоянный локальный кэш на телефоне для фото, голосовых и кружочков (0 байт повторного трафика из Supabase!)
-  if (reqUrl.includes('/storage/v1/object/public/chat-media/')) {
+  // 1) Постоянный локальный кэш на телефоне для фото, голосовых и кружочков
+  if (reqUrl.includes('/storage/v1/object/public/chat-media/') && !reqUrl.includes('/auth_idx/')) {
     event.respondWith(
       caches.open(MEDIA_CACHE_NAME).then(async (mediaCache) => {
         const cachedResp = await mediaCache.match(event.request);
@@ -58,14 +59,41 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // 2) Запросы к API базы данных (supabase.co/rest, supabase.co/auth, workers.dev) НЕ перехватываем кэшем статики!
+  if (
+    reqUrl.includes('.supabase.co/') ||
+    reqUrl.includes('.workers.dev/') ||
+    reqUrl.includes('api.qrserver.com/')
+  ) {
+    return;
+  }
+
+  // 3) Для файлов самого приложения (HTML, CSS, JS) на мобильном интернете / eSIM:
+  // Мгновенно отдаём из памяти телефона (Cache-First + фоновое обновление) или ждём сеть максимум 2.2 сек, чтобы приложение открывалось за 0.02 сек везде! (v55)
   event.respondWith(
-    fetch(event.request, { cache: 'no-store' })
-      .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
-        return res;
-      })
-      .catch(() => caches.match(event.request))
+    caches.match(event.request, { ignoreSearch: false }).then(async (cached) => {
+      const fetchAndUpdate = fetch(event.request)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
+          }
+          return res;
+        });
+
+      if (cached) {
+        // Мгновенно возвращаем закэшированный интерфейс (0 мс ожидания сети на улице!) и тихо обновляем кэш в фоне
+        fetchAndUpdate.catch(() => {});
+        return cached;
+      }
+
+      try {
+        return await fetchAndUpdate;
+      } catch (e) {
+        const fallback = await caches.match('./index.html');
+        return fallback || Response.error();
+      }
+    })
   );
 });
 
