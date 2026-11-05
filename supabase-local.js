@@ -395,7 +395,9 @@
       let ws = null;
       let hbTimer = null;
       let closedByApp = false;
+      let isJoined = false;
       let refCounter = 1;
+      const sendQueue = [];
       const broadcastHandlers = new Map();
       const pgHandlers = [];
       let presenceSyncHandlers = [];
@@ -418,28 +420,44 @@
           return presenceStateObj;
         },
         async track(payload) {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              topic,
-              event: 'presence',
-              payload: { type: 'presence', event: 'track', key: myPresenceKey, payload },
-              ref: String(++refCounter)
-            }));
+          const pkt = JSON.stringify({
+            topic,
+            event: 'presence',
+            payload: { type: 'presence', event: 'track', key: myPresenceKey, payload },
+            ref: String(++refCounter)
+          });
+          if (ws && ws.readyState === WebSocket.OPEN && isJoined) {
+            ws.send(pkt);
+          } else {
+            sendQueue.push(pkt);
           }
         },
         async send(msg) {
-          if (ws && ws.readyState === WebSocket.OPEN && msg && msg.type === 'broadcast') {
-            ws.send(JSON.stringify({
-              topic,
-              event: 'broadcast',
-              payload: { type: 'broadcast', event: msg.event, payload: msg.payload },
-              ref: String(++refCounter)
-            }));
+          if (!msg || msg.type !== 'broadcast') return;
+          const pkt = JSON.stringify({
+            topic,
+            event: 'broadcast',
+            payload: { type: 'broadcast', event: msg.event, payload: msg.payload },
+            ref: String(++refCounter)
+          });
+          if (ws && ws.readyState === WebSocket.OPEN && isJoined) {
+            ws.send(pkt);
+          } else {
+            sendQueue.push(pkt);
+            // Дублируем отправку через HTTP REST API Broadcast, если WebSocket ещё подключается после пуша! (v56)
+            fetch(`${baseUrl}/realtime/v1/api/broadcast`, {
+              method: 'POST',
+              headers: getHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({
+                messages: [{ topic: channelName, event: msg.event, payload: msg.payload }]
+              })
+            }).catch(() => {});
           }
         },
         subscribe(statusCb) {
           const connectWs = () => {
             if (closedByApp) return;
+            isJoined = false;
             try {
               const wsBase = baseUrl.replace(/^http/i, 'ws');
               const wsUrl = `${wsBase}/realtime/v1/websocket?apikey=${encodeURIComponent(supabaseKey)}&vsn=1.0.0`;
@@ -465,6 +483,10 @@
                   },
                   ref: String(++refCounter)
                 }));
+                isJoined = true;
+                while (sendQueue.length > 0 && ws && ws.readyState === WebSocket.OPEN) {
+                  ws.send(sendQueue.shift());
+                }
                 if (typeof statusCb === 'function') statusCb('SUBSCRIBED');
                 clearInterval(hbTimer);
                 hbTimer = setInterval(() => {
@@ -483,9 +505,10 @@
                   const data = JSON.parse(ev.data);
                   if (!data) return;
                   if (data.event === 'broadcast' && data.payload) {
-                    const bEv = data.payload.event;
+                    const bEv = data.payload.event || (data.payload.payload && data.payload.payload.event);
+                    const innerPayload = data.payload.payload !== undefined ? data.payload.payload : data.payload;
                     const fn = broadcastHandlers.get(bEv);
-                    if (fn) fn({ payload: data.payload.payload });
+                    if (fn) fn({ payload: innerPayload });
                   } else if (data.event === 'postgres_changes' && data.payload && data.payload.data) {
                     const d = data.payload.data;
                     const table = d.table;

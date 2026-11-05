@@ -2005,7 +2005,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = './supabase-local.js?v=55';
+      script.src = './supabase-local.js?v=56';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -5772,18 +5772,31 @@
     updateSmartActionButtonUI();
   }
 
-  // 12.5. АУДИО- И ВИДЕОЗВОНКИ БЕЗ VPN (с чистым звуком без хрипа и переключателем «Динамик / Громкая связь»!)
+  // 12.5. АУДИО- И ВИДЕОЗВОНКИ МЕЖДУ ЛЮБЫМИ СЕТЯМИ И СТРАНАМИ (STUN + TURN + буфер ICE-кандидатов v56)
   let rtcPeerConnection = null;
   let localCallStream = null;
   let activeCallState = null;
   let isCallMuted = false;
-  let isSpeakerphoneOn = false; // По умолчанию в аудиозвонках выключена громкая связь (режим обычного телефонного динамика)
+  let isSpeakerphoneOn = false;
   let callFacingMode = 'user';
+  let isAcceptingCallInProgress = false;
+  let pendingRemoteIceCandidates = [];
 
   const RTC_CONFIG = {
+    iceCandidatePoolSize: 10,
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ]
   };
 
@@ -5938,10 +5951,14 @@
         isVideo
       );
 
+      pendingRemoteIceCandidates = [];
       rtcPeerConnection = createRtcPeerConnection(pres.peer.id, isVideo);
       localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
 
-      const offer = await rtcPeerConnection.createOffer();
+      const offer = await rtcPeerConnection.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: Boolean(isVideo)
+      });
       await rtcPeerConnection.setLocalDescription(offer);
 
       // Мгновенно будим телефон собеседника через облачный Web Push (Apple APNs / Google FCM), если приложение у него закрыто!
@@ -5952,6 +5969,7 @@
 
       const sendOfferBroadcast = () => {
         if (!activeCallState || !activeCallState.isOutgoing || activeCallState.callStartTime || !realtimeChannel) return;
+        const currentSdp = (rtcPeerConnection && rtcPeerConnection.localDescription) ? rtcPeerConnection.localDescription : offer;
         realtimeChannel.send({
           type: 'broadcast',
           event: 'call-signal',
@@ -5961,22 +5979,56 @@
             to_id: pres.peer.id,
             room_id: activeRoom.id,
             is_video: isVideo,
-            sdp: rtcPeerConnection ? rtcPeerConnection.localDescription || offer : offer
+            sdp: {
+              type: currentSdp.type || 'offer',
+              sdp: currentSdp.sdp
+            }
           }
         }).catch(() => {});
       };
       sendOfferBroadcast();
       activeCallState.offerRepeatId = setInterval(sendOfferBroadcast, 900);
-      // Автоматический сброс гудков через 35 секунд, если собеседник не ответил
       activeCallState.noAnswerTimeoutId = setTimeout(() => {
         if (activeCallState && activeCallState.isOutgoing && !activeCallState.callStartTime) {
           endActiveCall(true);
         }
-      }, 35000);
+      }, 40000);
     } catch (err) {
       alert('Для звонка разрешите доступ к микрофону/камере: ' + (err.message || err));
       await endActiveCall(false);
     }
+  }
+
+  async function flushPendingIceCandidates() {
+    if (!rtcPeerConnection || !rtcPeerConnection.remoteDescription || !pendingRemoteIceCandidates.length) return;
+    const queue = [...pendingRemoteIceCandidates];
+    pendingRemoteIceCandidates = [];
+    for (const cand of queue) {
+      try {
+        await rtcPeerConnection.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (e) {}
+    }
+  }
+
+  function markCallAsConnected() {
+    if (!activeCallState || activeCallState.callStartTime) return;
+    stopCallRingingLoop();
+    if (activeCallState.offerRepeatId) {
+      clearInterval(activeCallState.offerRepeatId);
+      activeCallState.offerRepeatId = null;
+    }
+    if (activeCallState.answerRepeatId) {
+      clearInterval(activeCallState.answerRepeatId);
+      activeCallState.answerRepeatId = null;
+    }
+    triggerHaptic('medium');
+    activeCallState.callStartTime = Date.now();
+    callStatusText.textContent = 'В разговоре • 0:00';
+    activeCallState.timerId = setInterval(() => {
+      if (!activeCallState) return;
+      const sec = Math.floor((Date.now() - activeCallState.callStartTime) / 1000);
+      callStatusText.textContent = `В разговоре • ${formatSec(sec)}`;
+    }, 1000);
   }
 
   function createRtcPeerConnection(targetPeerId, isVideo) {
@@ -5984,6 +6036,7 @@
 
     pc.onicecandidate = (event) => {
       if (event.candidate && realtimeChannel) {
+        const candJson = typeof event.candidate.toJSON === 'function' ? event.candidate.toJSON() : event.candidate;
         realtimeChannel.send({
           type: 'broadcast',
           event: 'call-signal',
@@ -5991,36 +6044,43 @@
             type: 'ice',
             from_id: currentUser.id,
             to_id: targetPeerId,
-            candidate: event.candidate
+            candidate: candJson
           }
-        });
+        }).catch(() => {});
       }
     };
 
     pc.ontrack = (event) => {
-      const stream = event.streams && event.streams[0];
+      let stream = event.streams && event.streams[0];
+      if (!stream && event.track) {
+        stream = new MediaStream([event.track]);
+      }
       if (!stream) return;
       if (isVideo && callRemoteVideo) {
         callRemoteVideo.srcObject = stream;
         callRemoteVideo.volume = isSpeakerphoneOn ? 1.0 : 0.26;
+        callRemoteVideo.play().catch(() => {});
       } else if (callRemoteAudio) {
-        // Для аудиозвонка выводим звук через <audio>, чтобы iOS не принуждал громкую связь видеоплеера!
         callRemoteAudio.srcObject = stream;
         callRemoteAudio.volume = isSpeakerphoneOn ? 1.0 : 0.26;
+        callRemoteAudio.play().catch(() => {});
+      }
+      markCallAsConnected();
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const st = pc.iceConnectionState;
+      if (st === 'connected' || st === 'completed') {
+        markCallAsConnected();
+      } else if (st === 'closed') {
+        endActiveCall(false);
       }
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected' && activeCallState && !activeCallState.callStartTime) {
-        stopCallRingingLoop();
-        triggerHaptic('medium');
-        activeCallState.callStartTime = Date.now();
-        activeCallState.timerId = setInterval(() => {
-          if (!activeCallState) return;
-          const sec = Math.floor((Date.now() - activeCallState.callStartTime) / 1000);
-          callStatusText.textContent = `В разговоре • ${formatSec(sec)}`;
-        }, 1000);
-      } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      if (pc.connectionState === 'connected') {
+        markCallAsConnected();
+      } else if (pc.connectionState === 'closed') {
         endActiveCall(false);
       }
     };
@@ -6029,16 +6089,18 @@
   }
 
   async function handleIncomingCallSignal(payload) {
-    if (!payload || payload.to_id !== currentUser.id) return;
+    if (!payload || !currentUser || payload.to_id !== currentUser.id) return;
     const caller = allProfiles.find((p) => p.id === payload.from_id);
 
     if (payload.type === 'offer') {
       if (activeCallState) {
+        // Обновляем входящий SDP более полным пакетом (с собранными ICE-кандидатами), пока пользователь ещё не нажал «Ответить»!
         if (!activeCallState.isOutgoing && activeCallState.peerId === payload.from_id && payload.sdp) {
           activeCallState.incomingOffer = payload.sdp;
         }
         return;
       }
+      pendingRemoteIceCandidates = [];
       triggerHaptic('heavy');
       const isVid = Boolean(payload.is_video);
       await applySpeakerMode(isVid);
@@ -6052,6 +6114,7 @@
         callStartTime: 0,
         timerId: null,
         ringTimerId: startCallRingingLoop(true),
+        answerRepeatId: null,
         logged: false
       };
 
@@ -6073,46 +6136,88 @@
         activeCallState.offerRepeatId = null;
       }
       stopCallRingingLoop();
-      await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-      callStatusText.textContent = 'Соединение установлено';
-    } else if (payload.type === 'ice' && rtcPeerConnection && payload.candidate) {
       try {
-        await rtcPeerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+        if (rtcPeerConnection.signalingState === 'have-local-offer') {
+          await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          await flushPendingIceCandidates();
+        }
+        callStatusText.textContent = 'Соединение установлено...';
       } catch (e) {}
+    } else if (payload.type === 'ice' && payload.candidate) {
+      // Сохраняем ВСЕ ICE-кандидаты в буфер, даже если пользователь ещё не нажал «Ответить»! (v56)
+      if (rtcPeerConnection && rtcPeerConnection.remoteDescription) {
+        try {
+          await rtcPeerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+        } catch (e) {}
+      } else {
+        pendingRemoteIceCandidates.push(payload.candidate);
+      }
     } else if (payload.type === 'hangup') {
       await endActiveCall(false);
     }
   }
 
-  if (callAcceptBtn) {
-    callAcceptBtn.addEventListener('click', async () => {
-      if (!activeCallState || !activeCallState.incomingOffer) return;
-      triggerHaptic('medium');
-      stopCallRingingLoop();
+  async function acceptIncomingCallHandler(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    if (!activeCallState || !activeCallState.incomingOffer || isAcceptingCallInProgress) return;
+    isAcceptingCallInProgress = true;
+    triggerHaptic('medium');
+    stopCallRingingLoop();
+
+    // Синхронно разблокируем <audio> и <video> в момент касания кнопки на iPhone (iOS Safari Autoplay Policy)
+    try {
+      if (callRemoteAudio) callRemoteAudio.play().catch(() => {});
+      if (callRemoteVideo && activeCallState.isVideo) callRemoteVideo.play().catch(() => {});
+    } catch (e) {}
+
+    try {
+      if (callAcceptWrap) callAcceptWrap.classList.add('hidden');
+      callStatusText.textContent = 'Подключение...';
+
       try {
-        if (callAcceptWrap) callAcceptWrap.classList.add('hidden');
-        callStatusText.textContent = 'Подключение...';
-
-        localCallStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          },
-          video: activeCallState.isVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
-        });
-
-        if (activeCallState.isVideo && callLocalVideo) {
-          callLocalVideo.srcObject = localCallStream;
+        const audioStream = await acquireVoiceStreamOnce();
+        if (activeCallState.isVideo) {
+          try {
+            const vidStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+            });
+            localCallStream = new MediaStream([
+              ...audioStream.getAudioTracks(),
+              ...vidStream.getVideoTracks()
+            ]);
+          } catch (vidErr) {
+            // Если камера недоступна, всё равно принимаем звонок с микрофоном!
+            localCallStream = audioStream;
+          }
+        } else {
+          localCallStream = audioStream;
         }
+      } catch (micErr) {
+        localCallStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      }
 
-        rtcPeerConnection = createRtcPeerConnection(activeCallState.peerId, activeCallState.isVideo);
+      if (activeCallState.isVideo && callLocalVideo && localCallStream) {
+        callLocalVideo.srcObject = localCallStream;
+      }
+
+      rtcPeerConnection = createRtcPeerConnection(activeCallState.peerId, activeCallState.isVideo);
+      if (localCallStream) {
         localCallStream.getTracks().forEach((track) => rtcPeerConnection.addTrack(track, localCallStream));
+      }
 
-        await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(activeCallState.incomingOffer));
-        const answer = await rtcPeerConnection.createAnswer();
-        await rtcPeerConnection.setLocalDescription(answer);
+      await rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(activeCallState.incomingOffer));
+      await flushPendingIceCandidates();
 
+      const answer = await rtcPeerConnection.createAnswer();
+      await rtcPeerConnection.setLocalDescription(answer);
+
+      const sendAnswerPacket = () => {
+        if (!activeCallState || !realtimeChannel) return;
+        const curAns = (rtcPeerConnection && rtcPeerConnection.localDescription) ? rtcPeerConnection.localDescription : answer;
         realtimeChannel.send({
           type: 'broadcast',
           event: 'call-signal',
@@ -6120,14 +6225,39 @@
             type: 'answer',
             from_id: currentUser.id,
             to_id: activeCallState.peerId,
-            sdp: answer
+            sdp: {
+              type: curAns.type || 'answer',
+              sdp: curAns.sdp
+            }
           }
-        });
-      } catch (err) {
-        alert('Не удалось принять звонок: ' + (err.message || err));
-        await endActiveCall(true);
-      }
-    });
+        }).catch(() => {});
+      };
+
+      sendAnswerPacket();
+      // Повторяем отправку answer 4 раза (каждые 650 мс) со всеми собранными ICE-кандидатами для 100% прохождения через мобильные сети!
+      let ansCount = 0;
+      activeCallState.answerRepeatId = setInterval(() => {
+        ansCount += 1;
+        if (!activeCallState || activeCallState.callStartTime || ansCount > 4) {
+          if (activeCallState && activeCallState.answerRepeatId) {
+            clearInterval(activeCallState.answerRepeatId);
+            activeCallState.answerRepeatId = null;
+          }
+          return;
+        }
+        sendAnswerPacket();
+      }, 650);
+    } catch (err) {
+      alert('Не удалось принять звонок: ' + (err.message || err));
+      await endActiveCall(true);
+    } finally {
+      isAcceptingCallInProgress = false;
+    }
+  }
+
+  if (callAcceptBtn) {
+    callAcceptBtn.addEventListener('click', acceptIncomingCallHandler);
+    callAcceptBtn.addEventListener('touchend', acceptIncomingCallHandler, { passive: false });
   }
 
   // Переключение фронтальной и основной камеры прямо во время видеозвонка
@@ -6161,6 +6291,8 @@
 
   async function endActiveCall(notifyPeer = true) {
     stopCallRingingLoop();
+    isAcceptingCallInProgress = false;
+    pendingRemoteIceCandidates = [];
     const stateSnapshot = activeCallState;
     activeCallState = null;
 
@@ -6170,6 +6302,9 @@
     if (stateSnapshot && stateSnapshot.offerRepeatId) {
       clearInterval(stateSnapshot.offerRepeatId);
     }
+    if (stateSnapshot && stateSnapshot.answerRepeatId) {
+      clearInterval(stateSnapshot.answerRepeatId);
+    }
     if (stateSnapshot && stateSnapshot.noAnswerTimeoutId) {
       clearTimeout(stateSnapshot.noAnswerTimeoutId);
     }
@@ -6178,7 +6313,8 @@
       rtcPeerConnection = null;
     }
     if (localCallStream) {
-      localCallStream.getTracks().forEach((t) => t.stop());
+      localCallStream.getAudioTracks().forEach((t) => { t.enabled = false; });
+      localCallStream.getVideoTracks().forEach((t) => { t.stop(); });
       localCallStream = null;
     }
     if (callRemoteAudio) callRemoteAudio.srcObject = null;
@@ -8092,7 +8228,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=55').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=56').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
