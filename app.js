@@ -363,7 +363,12 @@
     const res = await supabaseClient.from('messages').insert(payload).select();
     if (res && res.data && res.data[0]) {
       const targetRm = myRooms.find((r) => r.id === room_id) || activeRoom;
-      if (targetRm && !(content || "").startsWith("__REACT__") && !(content || "").startsWith("__PIN__")) {
+      if (
+        targetRm &&
+        !(content || "").startsWith("__REACT__") &&
+        !(content || "").startsWith("__PIN__") &&
+        !(content || "").startsWith("__CALL_SIG__|")
+      ) {
         extractMessagePreviewText(res.data[0], targetRm).then((prev) => {
           dispatchClosedAppWebPushForRoom(targetRm, prev);
         }).catch(() => {});
@@ -385,7 +390,12 @@
     if (msg.content && msg.content.startsWith('__REACT__|')) {
       return 'reaction_packet';
     }
-    if (msg.content && (msg.content.startsWith('__PIN__|') || msg.content.startsWith('__PUSH__|'))) {
+    if (
+      msg.content &&
+      (msg.content.startsWith('__PIN__|') ||
+        msg.content.startsWith('__PUSH__|') ||
+        msg.content.startsWith('__CALL_SIG__|'))
+    ) {
       return 'pin_packet';
     }
     if (msg.content && msg.content.startsWith('__CALL__|')) {
@@ -2005,7 +2015,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = './supabase-local.js?v=56';
+      script.src = './supabase-local.js?v=57';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -2642,9 +2652,11 @@
       (msgs || []).forEach((m) => { if (m && m.id) notifiedMsgIds.add(m.id); });
     });
 
-    let lastPolledIso = new Date(Date.now() - 15000).toISOString();
+    // При запуске проверяем, не идёт ли прямо сейчас входящий звонок из России через HTTPS-базу (например, после клика по пушу!) (v57)
+    checkRecentCallSignalsFromDb().catch(() => {});
+
+    let lastPolledIso = new Date(Date.now() - 25000).toISOString();
     let pollTick = 0;
-    // Экономный резервный опрос раз в 16 сек (основная доставка идёт мгновенно за 0 мс по WebSocket Realtime) — снижает Log Ingestion в 5 раз (v52)
     setInterval(async () => {
       if (!currentUser || !supabaseClient || document.hidden) return;
       try {
@@ -2660,7 +2672,7 @@
           .in('room_id', rIds)
           .gt('created_at', lastPolledIso)
           .order('created_at', { ascending: true })
-          .limit(20);
+          .limit(25);
         if (!recent || !recent.length) {
           if (myRooms.length !== prevRoomCount) await preloadAllRoomsMessages();
           return;
@@ -2668,6 +2680,10 @@
         lastPolledIso = recent[recent.length - 1].created_at || new Date().toISOString();
         let hasNew = false;
         for (const m of recent) {
+          if (m.content && m.content.startsWith('__CALL_SIG__|')) {
+            processDbCallSignalRow(m);
+            continue;
+          }
           if (m.id && !notifiedMsgIds.has(m.id)) {
             hasNew = true;
             if (m.sender_id !== currentUser.id) {
@@ -2682,7 +2698,7 @@
           await preloadAllRoomsMessages();
         }
       } catch (e) {}
-    }, 16000);
+    }, 4500);
 
     setInterval(async () => {
       if (!currentUser || !supabaseClient || document.hidden) return;
@@ -5772,7 +5788,7 @@
     updateSmartActionButtonUI();
   }
 
-  // 12.5. АУДИО- И ВИДЕОЗВОНКИ МЕЖДУ ЛЮБЫМИ СЕТЯМИ И СТРАНАМИ (STUN + TURN + буфер ICE-кандидатов v56)
+  // 12.5. АУДИО- И ВИДЕОЗВОНКИ РОССИЯ ↔ ГРУЗИЯ / АРМЕНИЯ (HTTPS-мост через БД в обход блокировки WebSocket ТСПУ + TURN TCP/443 v57)
   let rtcPeerConnection = null;
   let localCallStream = null;
   let activeCallState = null;
@@ -5781,24 +5797,136 @@
   let callFacingMode = 'user';
   let isAcceptingCallInProgress = false;
   let pendingRemoteIceCandidates = [];
+  const processedCallSigRowIds = new Set();
+  let fastCallDbPollTimer = null;
 
   const RTC_CONFIG = {
     iceCandidatePoolSize: 10,
     iceServers: [
+      { urls: 'stun:stun.sipnet.ru:3478' },
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' },
       {
         urls: [
           'turn:openrelay.metered.ca:80',
           'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
+          'turn:openrelay.metered.ca:443?transport=tcp',
+          'turns:openrelay.metered.ca:443?transport=tcp'
         ],
         username: 'openrelayproject',
         credential: 'openrelayproject'
       }
     ]
   };
+
+  // Отправка сигнала звонка ОДНОВРЕМЕННО по WebSocket И через HTTPS-таблицу messages (чтобы звонки из России от мамы/папы проходили даже при блокировке WebSocket провайдером РФ!) (v57)
+  async function sendDualCallSignal(roomId, sigPayload, persistToDb = true) {
+    if (!currentUser || !supabaseClient) return;
+    if (realtimeChannel) {
+      try {
+        realtimeChannel.send({
+          type: 'broadcast',
+          event: 'call-signal',
+          payload: sigPayload
+        }).catch(() => {});
+      } catch (e) {}
+    }
+    if (persistToDb && roomId) {
+      try {
+        const pktStr = `__CALL_SIG__|${JSON.stringify(sigPayload)}`;
+        await supabaseClient.from('messages').insert({
+          room_id: roomId,
+          sender_id: currentUser.id,
+          sender_name: currentUser.display_name || currentUser.username || 'Pulse',
+          sender_color: currentUser.color || '#6366f1',
+          content: pktStr,
+          media_type: 'text',
+          media_duration: 0
+        });
+      } catch (e) {}
+    }
+  }
+
+  async function cleanupCallSignalPackets(roomId) {
+    if (!currentUser || !supabaseClient || !roomId) return;
+    try {
+      const { data: rows } = await supabaseClient
+        .from('messages')
+        .select('id,content,sender_id')
+        .eq('room_id', roomId)
+        .eq('sender_id', currentUser.id)
+        .order('created_at', { ascending: false })
+        .limit(35);
+      if (rows && rows.length) {
+        for (const r of rows) {
+          if (r.content && r.content.startsWith('__CALL_SIG__|')) {
+            await supabaseClient.from('messages').delete().eq('id', r.id);
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  function processDbCallSignalRow(row) {
+    if (!row || !row.content || !row.content.startsWith('__CALL_SIG__|')) return;
+    if (row.id && processedCallSigRowIds.has(row.id)) return;
+    if (row.id) processedCallSigRowIds.add(row.id);
+    if (currentUser && row.sender_id === currentUser.id) return;
+    // Игнорируем старые сигналы старше 42 секунд
+    if (row.created_at) {
+      const ageMs = Date.now() - new Date(row.created_at).getTime();
+      if (ageMs > 42000) return;
+    }
+    try {
+      const jsonStr = row.content.slice('__CALL_SIG__|'.length);
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && parsed.to_id === currentUser.id) {
+        handleIncomingCallSignal(parsed);
+      }
+    } catch (e) {}
+  }
+
+  async function checkRecentCallSignalsFromDb(targetRoomId = null) {
+    if (!currentUser || !supabaseClient) return;
+    try {
+      const sinceIso = new Date(Date.now() - 38000).toISOString();
+      let q = supabaseClient
+        .from('messages')
+        .select('*')
+        .gt('created_at', sinceIso)
+        .order('created_at', { ascending: true })
+        .limit(20);
+      if (targetRoomId) {
+        q = q.eq('room_id', targetRoomId);
+      } else if (myRooms.length > 0) {
+        q = q.in('room_id', myRooms.map((r) => r.id));
+      } else {
+        return;
+      }
+      const { data: rows } = await q;
+      if (rows && rows.length) {
+        rows.forEach((r) => processDbCallSignalRow(r));
+      }
+    } catch (e) {}
+  }
+
+  function startFastCallDbPolling(roomId) {
+    stopFastCallDbPolling();
+    fastCallDbPollTimer = setInterval(() => {
+      if (!activeCallState) {
+        stopFastCallDbPolling();
+        return;
+      }
+      checkRecentCallSignalsFromDb(roomId || activeCallState.roomId);
+    }, 1200);
+  }
+
+  function stopFastCallDbPolling() {
+    if (fastCallDbPollTimer) {
+      clearInterval(fastCallDbPollTimer);
+      fastCallDbPollTimer = null;
+    }
+  }
 
   // Применение режима «Обычный динамик (Тихо / у уха)» vs «Громкая связь»
   async function applySpeakerMode(speakerOn) {
@@ -5967,13 +6095,15 @@
         isVideo ? '📹 Входящий видеозвонок — нажмите, чтобы ответить!' : '📞 Входящий аудиозвонок — нажмите, чтобы ответить!'
       );
 
-      const sendOfferBroadcast = () => {
-        if (!activeCallState || !activeCallState.isOutgoing || activeCallState.callStartTime || !realtimeChannel) return;
+      startFastCallDbPolling(activeRoom.id);
+
+      let offerTick = 0;
+      const sendOfferBroadcast = (saveToDbNow = false) => {
+        if (!activeCallState || !activeCallState.isOutgoing || activeCallState.callStartTime) return;
         const currentSdp = (rtcPeerConnection && rtcPeerConnection.localDescription) ? rtcPeerConnection.localDescription : offer;
-        realtimeChannel.send({
-          type: 'broadcast',
-          event: 'call-signal',
-          payload: {
+        sendDualCallSignal(
+          activeRoom.id,
+          {
             type: 'offer',
             from_id: currentUser.id,
             to_id: pres.peer.id,
@@ -5983,11 +6113,17 @@
               type: currentSdp.type || 'offer',
               sdp: currentSdp.sdp
             }
-          }
-        }).catch(() => {});
+          },
+          saveToDbNow
+        );
       };
-      sendOfferBroadcast();
-      activeCallState.offerRepeatId = setInterval(sendOfferBroadcast, 900);
+      // Отправляем сразу по WebSocket, а через 650 мс (когда ICE-кандидаты уже собраны в SDP) записываем в HTTPS БД для прохождения через ТСПУ РФ!
+      sendOfferBroadcast(false);
+      setTimeout(() => sendOfferBroadcast(true), 650);
+      activeCallState.offerRepeatId = setInterval(() => {
+        offerTick += 1;
+        sendOfferBroadcast(offerTick % 4 === 0);
+      }, 1000);
       activeCallState.noAnswerTimeoutId = setTimeout(() => {
         if (activeCallState && activeCallState.isOutgoing && !activeCallState.callStartTime) {
           endActiveCall(true);
@@ -6035,18 +6171,20 @@
     const pc = new RTCPeerConnection(RTC_CONFIG);
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && realtimeChannel) {
+      if (event.candidate) {
         const candJson = typeof event.candidate.toJSON === 'function' ? event.candidate.toJSON() : event.candidate;
-        realtimeChannel.send({
-          type: 'broadcast',
-          event: 'call-signal',
-          payload: {
+        const rId = activeCallState ? activeCallState.roomId : (activeRoom ? activeRoom.id : null);
+        sendDualCallSignal(
+          rId,
+          {
             type: 'ice',
             from_id: currentUser.id,
             to_id: targetPeerId,
+            room_id: rId,
             candidate: candJson
-          }
-        }).catch(() => {});
+          },
+          false
+        );
       }
     };
 
@@ -6117,6 +6255,7 @@
         answerRepeatId: null,
         logged: false
       };
+      startFastCallDbPolling(payload.room_id);
 
       setupCallOverlayUI(
         caller,
@@ -6215,26 +6354,28 @@
       const answer = await rtcPeerConnection.createAnswer();
       await rtcPeerConnection.setLocalDescription(answer);
 
-      const sendAnswerPacket = () => {
-        if (!activeCallState || !realtimeChannel) return;
+      const sendAnswerPacket = (saveToDbNow = false) => {
+        if (!activeCallState) return;
         const curAns = (rtcPeerConnection && rtcPeerConnection.localDescription) ? rtcPeerConnection.localDescription : answer;
-        realtimeChannel.send({
-          type: 'broadcast',
-          event: 'call-signal',
-          payload: {
+        sendDualCallSignal(
+          activeCallState.roomId,
+          {
             type: 'answer',
             from_id: currentUser.id,
             to_id: activeCallState.peerId,
+            room_id: activeCallState.roomId,
             sdp: {
               type: curAns.type || 'answer',
               sdp: curAns.sdp
             }
-          }
-        }).catch(() => {});
+          },
+          saveToDbNow
+        );
       };
 
-      sendAnswerPacket();
-      // Повторяем отправку answer 4 раза (каждые 650 мс) со всеми собранными ICE-кандидатами для 100% прохождения через мобильные сети!
+      // Отправляем answer сразу и через 600 мс (со всеми собранными ICE-кандидатами внутри SDP) сохраняем в HTTPS БД для доставки в Россию!
+      sendAnswerPacket(true);
+      setTimeout(() => sendAnswerPacket(true), 600);
       let ansCount = 0;
       activeCallState.answerRepeatId = setInterval(() => {
         ansCount += 1;
@@ -6245,8 +6386,8 @@
           }
           return;
         }
-        sendAnswerPacket();
-      }, 650);
+        sendAnswerPacket(ansCount === 2);
+      }, 750);
     } catch (err) {
       alert('Не удалось принять звонок: ' + (err.message || err));
       await endActiveCall(true);
@@ -6291,6 +6432,7 @@
 
   async function endActiveCall(notifyPeer = true) {
     stopCallRingingLoop();
+    stopFastCallDbPolling();
     isAcceptingCallInProgress = false;
     pendingRemoteIceCandidates = [];
     const stateSnapshot = activeCallState;
@@ -6324,17 +6466,19 @@
 
     if (!stateSnapshot) return;
 
-    if (notifyPeer && realtimeChannel) {
-      realtimeChannel.send({
-        type: 'broadcast',
-        event: 'call-signal',
-        payload: {
+    if (notifyPeer) {
+      await sendDualCallSignal(
+        stateSnapshot.roomId,
+        {
           type: 'hangup',
           from_id: currentUser.id,
-          to_id: stateSnapshot.peerId
-        }
-      });
+          to_id: stateSnapshot.peerId,
+          room_id: stateSnapshot.roomId
+        },
+        true
+      );
     }
+    setTimeout(() => cleanupCallSignalPackets(stateSnapshot.roomId), 2500);
 
     if (stateSnapshot.isOutgoing && !stateSnapshot.logged && stateSnapshot.roomId) {
       stateSnapshot.logged = true;
@@ -6483,6 +6627,10 @@
           if (!incoming) return;
 
           if (payload.eventType === 'INSERT' && payload.new) {
+            if (payload.new.content && payload.new.content.startsWith('__CALL_SIG__|')) {
+              processDbCallSignalRow(payload.new);
+              return;
+            }
             await handleIncomingMessageNotification(payload.new);
             if (activeRoom && incoming.room_id === activeRoom.id) {
               // Если сообщение уже добавлено локально (optimistic или через broadcast) — не дёргаем сеть и DOM повторно!
@@ -8228,7 +8376,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=56').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=57').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
