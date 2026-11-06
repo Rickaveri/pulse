@@ -1,7 +1,7 @@
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization"
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, Prefer, x-upsert, x-target-url"
 };
 
 function base64ToUint8Array(b64) {
@@ -18,9 +18,42 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
+
+    const urlObj = new URL(request.url);
+
+    // Прозрачный резервный прокси к Supabase для мобильных сетей / eSIM в роуминге (v58)
+    const targetUrl = request.headers.get("x-target-url") || urlObj.searchParams.get("target");
+    if (targetUrl && targetUrl.startsWith("https://tdvpxxpnyinjzirizxea.supabase.co/")) {
+      try {
+        const forwardHeaders = new Headers();
+        ["apikey", "authorization", "content-type", "prefer", "x-upsert"].forEach((h) => {
+          const val = request.headers.get(h);
+          if (val) forwardHeaders.set(h, val);
+        });
+        const bodyBuf = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
+        const supRes = await fetch(targetUrl, {
+          method: request.method,
+          headers: forwardHeaders,
+          body: bodyBuf
+        });
+        const respHeaders = new Headers(CORS_HEADERS);
+        const ct = supRes.headers.get("content-type");
+        if (ct) respHeaders.set("Content-Type", ct);
+        return new Response(supRes.body, {
+          status: supRes.status,
+          headers: respHeaders
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ message: String(err) }), {
+          status: 502,
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
+        });
+      }
+    }
+
     if (request.method === "GET") {
       return new Response(
-        "PULSE_PUSH_WORKER_READY_V30",
+        "PULSE_PUSH_WORKER_READY_V58",
         { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "text/plain; charset=utf-8" } }
       );
     }

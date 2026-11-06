@@ -57,6 +57,48 @@
       );
     }
 
+    // Умный fetch для мобильного интернета и eSIM в роуминге: быстрый таймаут + автоматический повтор и резервный релей при подвисании сокета (v58)
+    async function smartFetch(url, options = {}) {
+      const timeoutMs = options.body instanceof Blob ? 20000 : 6500;
+      const attemptDirect = async (ms) => {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const tid = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+        try {
+          const res = await fetch(url, Object.assign({}, options, {
+            cache: 'no-store',
+            signal: ctrl ? ctrl.signal : undefined
+          }));
+          if (tid) clearTimeout(tid);
+          return res;
+        } catch (err) {
+          if (tid) clearTimeout(tid);
+          throw err;
+        }
+      };
+
+      try {
+        return await attemptDirect(timeoutMs);
+      } catch (firstErr) {
+        // Вторая попытка через новый чистый сокет (помогает при переключении сот LTE/5G в роуминге)
+        try {
+          return await attemptDirect(timeoutMs);
+        } catch (secondErr) {
+          // Резервная попытка через Worker-релей, если мобильный оператор режет прямой маршрут к supabase.co
+          const cfg = window.MESSENGER_CONFIG || {};
+          const relayBase = (cfg.PUSH_WORKER_URL || '').trim();
+          if (relayBase && String(url).startsWith(baseUrl)) {
+            const relayHeaders = Object.assign({}, options.headers || {}, { 'x-target-url': url });
+            return await fetch(`${relayBase}?target=${encodeURIComponent(url)}`, {
+              method: options.method || 'GET',
+              headers: relayHeaders,
+              body: options.body
+            });
+          }
+          throw secondErr;
+        }
+      }
+    }
+
     async function refreshSessionIfNeeded(sess) {
       if (!sess || !sess.refresh_token) return sess;
       const nowSec = Math.floor(Date.now() / 1000);
@@ -66,14 +108,13 @@
       try {
         const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
         const tid = ctrl ? setTimeout(() => ctrl.abort(), 6500) : null;
-        const res = await fetch(`${baseUrl}/auth/v1/token?grant_type=refresh_token`, {
+        const res = await smartFetch(`${baseUrl}/auth/v1/token?grant_type=refresh_token`, {
           method: 'POST',
           headers: {
             apikey: supabaseKey,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ refresh_token: sess.refresh_token }),
-          signal: ctrl ? ctrl.signal : undefined
+          body: JSON.stringify({ refresh_token: sess.refresh_token })
         });
         if (tid) clearTimeout(tid);
         if (res.ok) {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pulse-pwa-v57';
+const CACHE_NAME = 'pulse-pwa-v58';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aObq6osNkyamzIRi6FwdLZeTbh0yV65gqmb5Y';
@@ -6,20 +6,29 @@ const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aOb
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=57',
-  './config.js?v=57',
-  './supabase-local.js?v=57',
-  './app.js?v=57',
-  './enhancements.js?v=57',
+  './styles.css?v=58',
+  './config.js?v=58',
+  './supabase-local.js?v=58',
+  './app.js?v=58',
+  './enhancements.js?v=58',
   './manifest.json'
 ];
 
 let lastPushNotifSignature = '';
 let lastPushNotifTime = 0;
 
+// Кэшируем каждый файл по отдельности (чтобы сбой одного файла при деплое GitHub Pages никогда не оставлял кэш пустым!) (v58)
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).catch(() => {})
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await Promise.allSettled(
+        ASSETS.map((url) =>
+          fetch(url, { cache: 'reload' }).then((res) => {
+            if (res && res.ok) return cache.put(url, res);
+          })
+        )
+      );
+    }).catch(() => {})
   );
   self.skipWaiting();
 });
@@ -28,13 +37,18 @@ const MEDIA_CACHE_NAME = 'pulse-media-cache-v1';
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((k) => k !== CACHE_NAME && k !== MEDIA_CACHE_NAME)
-          .map((k) => caches.delete(k))
-      )
-    )
+    caches.open(CACHE_NAME).then(async (newCache) => {
+      const newKeys = await newCache.keys();
+      // Удаляем старые кэши только если новый кэш успешно заполнен!
+      if (newKeys.length >= 4) {
+        const keys = await caches.keys();
+        await Promise.all(
+          keys
+            .filter((k) => k !== CACHE_NAME && k !== MEDIA_CACHE_NAME)
+            .map((k) => caches.delete(k))
+        );
+      }
+    }).catch(() => {})
   );
   self.clients.claim();
 });
@@ -69,9 +83,14 @@ self.addEventListener('fetch', (event) => {
   }
 
   // 3) Для файлов самого приложения (HTML, CSS, JS) на мобильном интернете / eSIM:
-  // Мгновенно отдаём из памяти телефона (Cache-First + фоновое обновление) или ждём сеть максимум 2.2 сек, чтобы приложение открывалось за 0.02 сек везде! (v55)
+  // Ищем и по точному URL, и без query-параметров (?v=...), чтобы приложение открывалось за 0.01 сек даже без сети! (v58)
   event.respondWith(
-    caches.match(event.request, { ignoreSearch: false }).then(async (cached) => {
+    (async () => {
+      let cached = await caches.match(event.request, { ignoreSearch: false });
+      if (!cached) {
+        cached = await caches.match(event.request, { ignoreSearch: true });
+      }
+
       const fetchAndUpdate = fetch(event.request)
         .then((res) => {
           if (res && res.ok) {
@@ -82,7 +101,6 @@ self.addEventListener('fetch', (event) => {
         });
 
       if (cached) {
-        // Мгновенно возвращаем закэшированный интерфейс (0 мс ожидания сети на улице!) и тихо обновляем кэш в фоне
         fetchAndUpdate.catch(() => {});
         return cached;
       }
@@ -90,10 +108,10 @@ self.addEventListener('fetch', (event) => {
       try {
         return await fetchAndUpdate;
       } catch (e) {
-        const fallback = await caches.match('./index.html');
+        const fallback = (await caches.match('./index.html', { ignoreSearch: true })) || (await caches.match('./', { ignoreSearch: true }));
         return fallback || Response.error();
       }
-    })
+    })()
   );
 });
 
