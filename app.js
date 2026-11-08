@@ -2015,7 +2015,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = './supabase-local.js?v=60';
+      script.src = './supabase-local.js?v=61';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -8421,7 +8421,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=60').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=61').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

@@ -996,9 +996,152 @@
     });
   }
 
+  // =========================================================================
+  // 14. ОБНОВЛЕНИЕ v61:
+  // А) Запоминание позиции паузы длинных голосовых и видеокружочков (Resume Playback)
+  // Б) Копирование кодов (4–8 цифр) и номеров в тексте сообщения в 1 тап
+  // В) Счётчик новых сообщений на кнопке прокрутки вниз (↓) при чтении истории
+  // Г) Мгновенная фоновая предзагрузка соседних снимков в фотогалерее (0 мс свайп)
+  // =========================================================================
+
+  const MEDIA_RESUME_KEY = 'pulse_media_resume_v61';
+  function getResumeMap() {
+    try {
+      return JSON.parse(localStorage.getItem(MEDIA_RESUME_KEY) || '{}');
+    } catch (e) {
+      return {};
+    }
+  }
+  function saveResumePos(msgId, sec) {
+    if (!msgId) return;
+    try {
+      const map = getResumeMap();
+      if (sec <= 1) {
+        delete map[msgId];
+      } else {
+        map[msgId] = Math.floor(sec);
+      }
+      const keys = Object.keys(map);
+      if (keys.length > 150) delete map[keys[0]];
+      localStorage.setItem(MEDIA_RESUME_KEY, JSON.stringify(map));
+    } catch (e) {}
+  }
+
+  function bindMediaResumeAndCodesV61() {
+    if (!messagesViewport) return;
+    const resumeMap = getResumeMap();
+
+    messagesViewport.querySelectorAll('video[data-seq-media="1"]:not([data-v61-resume])').forEach((vid) => {
+      vid.setAttribute('data-v61-resume', '1');
+      const row = vid.closest('.msg-row');
+      const msgId = row ? row.getAttribute('data-msg-id') : '';
+      if (!msgId) return;
+      if (resumeMap[msgId] && resumeMap[msgId] > 2) {
+        vid.addEventListener('loadedmetadata', () => {
+          if (vid.duration > resumeMap[msgId] + 2) {
+            try { vid.currentTime = resumeMap[msgId]; } catch (e) {}
+          }
+        }, { once: true });
+      }
+      vid.addEventListener('pause', () => {
+        if (!vid.ended && vid.currentTime > 3 && vid.duration > 12) {
+          saveResumePos(msgId, vid.currentTime);
+        }
+      });
+      vid.addEventListener('ended', () => saveResumePos(msgId, 0));
+    });
+
+    messagesViewport.querySelectorAll('.msg-bubble:not([data-v61-codes])').forEach((bubble) => {
+      bubble.setAttribute('data-v61-codes', '1');
+      if (bubble.querySelector('.voice-player, video, .game-visual-card')) return;
+      const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, null);
+      const nodes = [];
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.parentElement && !n.parentElement.closest('.msg-meta, .msg-reply-quote, a, code, .copyable-code-chip')) {
+          nodes.push(n);
+        }
+      }
+      nodes.forEach((tNode) => {
+        const val = tNode.nodeValue || '';
+        if (!/\b\d{4,8}\b/.test(val) || /\d{4}-\d{2}-\d{2}/.test(val)) return;
+        const parts = val.split(/(\b\d{4,8}\b)/g);
+        if (parts.length <= 1 || !tNode.parentNode) return;
+        const frag = document.createDocumentFragment();
+        parts.forEach((part) => {
+          if (/^\d{4,8}$/.test(part)) {
+            const chip = document.createElement('span');
+            chip.className = 'copyable-code-chip';
+            chip.title = 'Нажмите, чтобы скопировать код';
+            chip.textContent = part;
+            chip.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              haptic('medium');
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(part).catch(() => {});
+              }
+              showQuickToast('📋 Код скопирован', `${part} скопирован в буфер обмена`);
+            });
+            frag.appendChild(chip);
+          } else if (part) {
+            frag.appendChild(document.createTextNode(part));
+          }
+        });
+        tNode.parentNode.replaceChild(frag, tNode);
+      });
+    });
+  }
+
+  const scrollBottomBtn = document.getElementById('scrollBottomBtn');
+  let knownRowCountWhileBottom = 0;
+  if (messagesViewport && scrollBottomBtn) {
+    messagesViewport.addEventListener('scroll', () => {
+      const dist = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+      if (dist < 180) {
+        knownRowCountWhileBottom = messagesViewport.querySelectorAll('.msg-row').length;
+        scrollBottomBtn.textContent = '↓';
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    const v61Obs = new MutationObserver(() => {
+      requestAnimationFrame(() => {
+        bindMediaResumeAndCodesV61();
+        if (scrollBottomBtn && messagesViewport) {
+          const totalRows = messagesViewport.querySelectorAll('.msg-row').length;
+          const dist = messagesViewport.scrollHeight - messagesViewport.scrollTop - messagesViewport.clientHeight;
+          if (dist >= 180 && knownRowCountWhileBottom > 0 && totalRows > knownRowCountWhileBottom) {
+            const diff = totalRows - knownRowCountWhileBottom;
+            scrollBottomBtn.textContent = `↓ ${diff}`;
+          } else {
+            knownRowCountWhileBottom = totalRows;
+          }
+        }
+      });
+    });
+    v61Obs.observe(messagesViewport, { childList: true });
+    bindMediaResumeAndCodesV61();
+  }
+
+  if (lightbox && lightboxImg && 'MutationObserver' in window) {
+    const preloadObs = new MutationObserver(() => {
+      if (lightbox.classList.contains('hidden') || galleryUrls.length <= 1) return;
+      const nextUrl = galleryUrls[(galleryIndex + 1) % galleryUrls.length];
+      const prevUrl = galleryUrls[(galleryIndex - 1 + galleryUrls.length) % galleryUrls.length];
+      [nextUrl, prevUrl].forEach((u) => {
+        if (u) {
+          const pre = new Image();
+          pre.src = u;
+        }
+      });
+    });
+    preloadObs.observe(lightboxImg, { attributes: true, attributeFilter: ['src'] });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=60').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=61').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

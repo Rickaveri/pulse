@@ -478,6 +478,23 @@ input, textarea {
   pointer-events: none;
 }
 
+.copyable-code-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.16);
+  border: 1px dashed rgba(99, 102, 241, 0.45);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.copyable-code-chip:active {
+  transform: scale(0.95);
+  background: rgba(99, 102, 241, 0.32);
+}
+
 .input-field:focus {
   border-color: var(--accent);
 }
