@@ -736,9 +736,269 @@
     });
   }
 
+  // =========================================================================
+  // 13. ОБНОВЛЕНИЕ v60:
+  // А) Листание фото в полноэкранной галерее (свайп влево/вправо + кнопки ‹ › + счётчик 1/N)
+  // Б) Точка «Не прослушано» на новых входящих голосовых и видеокружочках
+  // В) Плавный переход с подсветкой при нажатии на цитату ответа
+  // Г) Пакетная отправка сразу нескольких выбранных фотографий/файлов
+  // =========================================================================
+
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightboxImg');
+  let galleryUrls = [];
+  let galleryIndex = 0;
+  let lbPrevBtn = null;
+  let lbNextBtn = null;
+  let lbCounter = null;
+
+  function ensureLightboxGalleryControls() {
+    if (!lightbox || lbCounter) return;
+    lbCounter = document.createElement('div');
+    lbCounter.className = 'lb-counter-pill hidden';
+    lbPrevBtn = document.createElement('button');
+    lbPrevBtn.type = 'button';
+    lbPrevBtn.className = 'lb-nav-btn prev hidden';
+    lbPrevBtn.textContent = '‹';
+    lbNextBtn = document.createElement('button');
+    lbNextBtn.type = 'button';
+    lbNextBtn.className = 'lb-nav-btn next hidden';
+    lbNextBtn.textContent = '›';
+
+    const stepGallery = (dir, ev) => {
+      if (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+      }
+      if (galleryUrls.length <= 1) return;
+      haptic('light');
+      galleryIndex = (galleryIndex + dir + galleryUrls.length) % galleryUrls.length;
+      if (lightboxImg) {
+        lightboxImg.style.transform = 'scale(1)';
+        lightboxImg.src = galleryUrls[galleryIndex];
+      }
+      updateLightboxGalleryUI();
+    };
+
+    lbPrevBtn.addEventListener('click', (e) => stepGallery(-1, e));
+    lbNextBtn.addEventListener('click', (e) => stepGallery(1, e));
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    lightbox.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length === 1) {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      }
+    }, { passive: true });
+
+    lightbox.addEventListener('touchend', (e) => {
+      if (!touchStartX || galleryUrls.length <= 1) return;
+      const t = (e.changedTouches && e.changedTouches[0]) || null;
+      if (!t) return;
+      const dx = t.clientX - touchStartX;
+      const dy = t.clientY - touchStartY;
+      touchStartX = 0;
+      if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        stepGallery(dx < 0 ? 1 : -1, null);
+      }
+    }, { passive: true });
+
+    window.addEventListener('keydown', (e) => {
+      if (!lightbox || lightbox.classList.contains('hidden') || galleryUrls.length <= 1) return;
+      if (e.key === 'ArrowRight') stepGallery(1, null);
+      else if (e.key === 'ArrowLeft') stepGallery(-1, null);
+    });
+
+    lightbox.appendChild(lbCounter);
+    lightbox.appendChild(lbPrevBtn);
+    lightbox.appendChild(lbNextBtn);
+  }
+
+  function updateLightboxGalleryUI() {
+    ensureLightboxGalleryControls();
+    if (!lbCounter || !lbPrevBtn || !lbNextBtn) return;
+    const multi = galleryUrls.length > 1;
+    lbCounter.classList.toggle('hidden', !multi);
+    lbPrevBtn.classList.toggle('hidden', !multi);
+    lbNextBtn.classList.toggle('hidden', !multi);
+    if (multi) {
+      lbCounter.textContent = `${galleryIndex + 1} / ${galleryUrls.length}`;
+    }
+    const dlLink = lightbox ? lightbox.querySelector('a[download]') : null;
+    if (dlLink && lightboxImg) dlLink.href = lightboxImg.src || '#';
+  }
+
+  if (lightbox && lightboxImg && 'MutationObserver' in window) {
+    const lbObs = new MutationObserver(() => {
+      if (lightbox.classList.contains('hidden') || !lightboxImg.src) return;
+      const imgs = messagesViewport
+        ? Array.from(messagesViewport.querySelectorAll('.msg-bubble img'))
+            .map((im) => im.src)
+            .filter((s) => s && !s.includes('img.youtube.com'))
+        : [];
+      const unique = Array.from(new Set(imgs));
+      const cur = lightboxImg.src;
+      if (unique.length > 0 && unique.includes(cur)) {
+        galleryUrls = unique;
+        galleryIndex = unique.indexOf(cur);
+      } else {
+        galleryUrls = cur ? [cur] : [];
+        galleryIndex = 0;
+      }
+      updateLightboxGalleryUI();
+    });
+    lbObs.observe(lightbox, { attributes: true, attributeFilter: ['class'] });
+  }
+
+  // Б) Метка «Не прослушано» (акцентная точка) на входящих голосовых и видеокружочках
+  const PLAYED_MEDIA_KEY = 'pulse_played_media_v60';
+  function getPlayedMediaSet() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(PLAYED_MEDIA_KEY) || '[]'));
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function markMediaPlayed(msgId, dotEl) {
+    if (dotEl) dotEl.remove();
+    if (!msgId) return;
+    try {
+      const set = getPlayedMediaSet();
+      set.add(String(msgId));
+      const arr = Array.from(set).slice(-400);
+      localStorage.setItem(PLAYED_MEDIA_KEY, JSON.stringify(arr));
+    } catch (e) {}
+  }
+
+  function decorateUnplayedVoiceAndCircles() {
+    if (!messagesViewport) return;
+    const playedSet = getPlayedMediaSet();
+    const rows = messagesViewport.querySelectorAll('.msg-row:not([data-v60-unplayed-checked])');
+    rows.forEach((row) => {
+      row.setAttribute('data-v60-unplayed-checked', '1');
+      if (row.classList.contains('mine') || row.classList.contains('own')) return;
+      const msgId = row.getAttribute('data-msg-id') || '';
+      if (!msgId || playedSet.has(msgId)) return;
+
+      const voicePlayer = row.querySelector('.voice-player');
+      if (voicePlayer) {
+        const dot = document.createElement('span');
+        dot.className = 'unplayed-media-dot';
+        dot.title = 'Ещё не прослушано';
+        voicePlayer.appendChild(dot);
+        const playBtn = voicePlayer.querySelector('.voice-play-btn');
+        if (playBtn) {
+          playBtn.addEventListener('click', () => markMediaPlayed(msgId, dot), { once: true });
+        }
+        const origStart = voicePlayer._startSeqPlay;
+        if (typeof origStart === 'function') {
+          voicePlayer._startSeqPlay = function () {
+            markMediaPlayed(msgId, dot);
+            return origStart.apply(this, arguments);
+          };
+        }
+      }
+
+      const circleVideo = row.querySelector('video[data-seq-media="1"]');
+      if (circleVideo) {
+        const badge = row.querySelector('.video-circle-badge');
+        const dot = document.createElement('span');
+        dot.className = 'unplayed-media-dot';
+        dot.title = 'Ещё не просмотрено со звуком';
+        if (badge) badge.appendChild(dot);
+        circleVideo.addEventListener('play', () => {
+          if (!circleVideo.muted) markMediaPlayed(msgId, dot);
+        });
+        const circleWrap = circleVideo.parentElement;
+        if (circleWrap) {
+          circleWrap.addEventListener('click', () => markMediaPlayed(msgId, dot), { once: true });
+        }
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    const unplayedObs = new MutationObserver(() => {
+      requestAnimationFrame(decorateUnplayedVoiceAndCircles);
+    });
+    unplayedObs.observe(messagesViewport, { childList: true });
+    decorateUnplayedVoiceAndCircles();
+  }
+
+  // В) Плавная подсветка исходного сообщения при клике на цитату ответа (.msg-reply-quote)
+  if (messagesViewport) {
+    messagesViewport.addEventListener('click', (e) => {
+      const quote = e.target.closest('.msg-reply-quote');
+      if (!quote) return;
+      const snippet = (quote.textContent || '').trim();
+      if (!snippet) return;
+      const allRows = Array.from(messagesViewport.querySelectorAll('.msg-row'));
+      const currentRow = quote.closest('.msg-row');
+      for (const r of allRows) {
+        if (r === currentRow) continue;
+        const b = r.querySelector('.msg-bubble');
+        if (b && (b.textContent || '').includes(snippet.slice(-18))) {
+          r.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          r.classList.remove('msg-highlight-flash');
+          void r.offsetWidth;
+          r.classList.add('msg-highlight-flash');
+          setTimeout(() => r.classList.remove('msg-highlight-flash'), 1700);
+          break;
+        }
+      }
+    });
+  }
+
+  // Г) Пакетная отправка сразу нескольких выбранных фото/файлов через скрепку
+  let batchPendingFiles = [];
+  const mediaPreviewTitle = document.getElementById('mediaPreviewTitle');
+  const confirmSendMediaBtn = document.getElementById('confirmSendMediaBtn');
+  const cancelSendMediaBtn = document.getElementById('cancelSendMediaBtn');
+
+  if (attachmentInput) {
+    attachmentInput.addEventListener('change', (e) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      if (files.length > 1) {
+        batchPendingFiles = files.slice(1);
+        setTimeout(() => {
+          if (mediaPreviewTitle) {
+            mediaPreviewTitle.textContent = `Отправить ${files.length} влож. (пачкой)`;
+          }
+        }, 30);
+      } else if (batchPendingFiles.length === 0) {
+        batchPendingFiles = [];
+      }
+    }, true);
+  }
+
+  if (cancelSendMediaBtn) {
+    cancelSendMediaBtn.addEventListener('click', () => {
+      batchPendingFiles = [];
+    });
+  }
+
+  if (confirmSendMediaBtn && attachmentInput) {
+    confirmSendMediaBtn.addEventListener('click', () => {
+      if (batchPendingFiles.length === 0) return;
+      const nextFile = batchPendingFiles.shift();
+      setTimeout(() => {
+        try {
+          const dt = new DataTransfer();
+          dt.items.add(nextFile);
+          attachmentInput.files = dt.files;
+          attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
+          setTimeout(() => {
+            confirmSendMediaBtn.click();
+          }, 220);
+        } catch (e) {}
+      }, 420);
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=59').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=60').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });
