@@ -2015,7 +2015,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = './supabase-local.js?v=58';
+      script.src = './supabase-local.js?v=59';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -3607,15 +3607,22 @@
 
     if (sharedMediaGrid) {
       sharedMediaGrid.innerHTML = '';
+      const sharedMediaTabsEl = document.getElementById('sharedMediaTabs');
+      if (sharedMediaTabsEl) {
+        sharedMediaTabsEl.querySelectorAll('[data-media-tab]').forEach((b) => {
+          b.classList.toggle('active', b.getAttribute('data-media-tab') === 'all');
+        });
+      }
       const mediaMsgs = roomMessages.filter((m) => Boolean(m.media_url));
       if (mediaMsgs.length === 0) {
-        sharedMediaGrid.innerHTML = `<div style="grid-column:1/-1; font-size:12.5px; color:var(--text-muted); padding:8px 0;">В этом диалоге пока нет отправленных фото или файлов.</div>`;
+        sharedMediaGrid.innerHTML = `<div class="shared-media-empty" style="grid-column:1/-1; font-size:12.5px; color:var(--text-muted); padding:8px 0;">В этом диалоге пока нет отправленных фото или файлов.</div>`;
       } else {
         mediaMsgs.slice().reverse().forEach((m) => {
           const k = detectMessageKind(m);
           if (k === 'image') {
             const img = document.createElement('img');
             img.className = 'shared-media-thumb';
+            img.setAttribute('data-media-kind', 'image');
             img.src = m.media_url;
             img.alt = 'Фото';
             img.addEventListener('click', () => {
@@ -3626,6 +3633,7 @@
             sharedMediaGrid.appendChild(img);
           } else {
             const link = document.createElement('a');
+            link.setAttribute('data-media-kind', k);
             link.href = m.media_url;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
@@ -3641,6 +3649,20 @@
             link.style.color = 'var(--text-main)';
             link.style.fontSize = '11px';
             link.innerHTML = `<span style="font-size:20px;">${k === 'video_circle' ? '📹' : k === 'voice' ? '🎤' : '📎'}</span><span style="margin-top:3px;">${k === 'video_circle' ? 'Кружок' : k === 'voice' ? 'Голос' : 'Файл'}</span>`;
+            link.addEventListener('click', (ev) => {
+              if (k === 'video_circle' || k === 'voice') {
+                const rowEl = messagesViewport ? messagesViewport.querySelector(`[data-msg-id="${m.id}"]`) : null;
+                if (rowEl) {
+                  ev.preventDefault();
+                  peerModal.classList.add('hidden');
+                  rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  const seqEl = rowEl.querySelector('[data-seq-media="1"]');
+                  if (seqEl && typeof seqEl._startSeqPlay === 'function') {
+                    setTimeout(() => seqEl._startSeqPlay(), 220);
+                  }
+                }
+              }
+            });
             sharedMediaGrid.appendChild(link);
           }
         });
@@ -6146,6 +6168,14 @@
     }
   }
 
+  function updateConnectedCallStatusLabel() {
+    if (!activeCallState || !activeCallState.callStartTime) return;
+    const sec = Math.floor((Date.now() - activeCallState.callStartTime) / 1000);
+    callStatusText.textContent = activeCallState.peerInBackground
+      ? `⏸ Собеседник в другом окне • ${formatSec(sec)}`
+      : `В разговоре • ${formatSec(sec)}`;
+  }
+
   function markCallAsConnected() {
     if (!activeCallState || activeCallState.callStartTime) return;
     stopCallRingingLoop();
@@ -6159,13 +6189,25 @@
     }
     triggerHaptic('medium');
     activeCallState.callStartTime = Date.now();
-    callStatusText.textContent = 'В разговоре • 0:00';
-    activeCallState.timerId = setInterval(() => {
-      if (!activeCallState) return;
-      const sec = Math.floor((Date.now() - activeCallState.callStartTime) / 1000);
-      callStatusText.textContent = `В разговоре • ${formatSec(sec)}`;
-    }, 1000);
+    updateConnectedCallStatusLabel();
+    activeCallState.timerId = setInterval(updateConnectedCallStatusLabel, 1000);
   }
+
+  // Отправляем сигнал, когда во время звонка собеседник сворачивает или разворачивает приложение (v59)
+  document.addEventListener('visibilitychange', () => {
+    if (!activeCallState || !activeCallState.callStartTime || !currentUser) return;
+    sendDualCallSignal(
+      activeCallState.roomId,
+      {
+        type: 'call-visibility',
+        from_id: currentUser.id,
+        to_id: activeCallState.peerId,
+        room_id: activeCallState.roomId,
+        hidden: Boolean(document.hidden)
+      },
+      false
+    );
+  });
 
   function createRtcPeerConnection(targetPeerId, isVideo) {
     const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -6291,6 +6333,9 @@
       } else {
         pendingRemoteIceCandidates.push(payload.candidate);
       }
+    } else if (payload.type === 'call-visibility' && activeCallState) {
+      activeCallState.peerInBackground = Boolean(payload.hidden);
+      updateConnectedCallStatusLabel();
     } else if (payload.type === 'hangup') {
       await endActiveCall(false);
     }
@@ -8376,7 +8421,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=58').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=59').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

@@ -181,7 +181,7 @@
       },
       async signInWithPassword({ email, password }) {
         try {
-          const res = await fetch(`${baseUrl}/auth/v1/token?grant_type=password`, {
+          const res = await smartFetch(`${baseUrl}/auth/v1/token?grant_type=password`, {
             method: 'POST',
             headers: { apikey: supabaseKey, 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password })
@@ -202,7 +202,7 @@
       },
       async signUp({ email, password, options }) {
         try {
-          const res = await fetch(`${baseUrl}/auth/v1/signup`, {
+          const res = await smartFetch(`${baseUrl}/auth/v1/signup`, {
             method: 'POST',
             headers: { apikey: supabaseKey, 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -237,7 +237,7 @@
       async resetPasswordForEmail(email, opts) {
         try {
           const redirectTo = (opts && opts.redirectTo) ? `?redirect_to=${encodeURIComponent(opts.redirectTo)}` : '';
-          const res = await fetch(`${baseUrl}/auth/v1/recover${redirectTo}`, {
+          const res = await smartFetch(`${baseUrl}/auth/v1/recover${redirectTo}`, {
             method: 'POST',
             headers: { apikey: supabaseKey, 'Content-Type': 'application/json' },
             body: JSON.stringify({ email })
@@ -253,7 +253,7 @@
       },
       async setSession({ access_token, refresh_token }) {
         try {
-          const res = await fetch(`${baseUrl}/auth/v1/user`, {
+          const res = await smartFetch(`${baseUrl}/auth/v1/user`, {
             headers: { apikey: supabaseKey, Authorization: `Bearer ${access_token}` }
           });
           const user = await res.json();
@@ -274,7 +274,7 @@
       },
       async verifyOtp(params) {
         try {
-          const res = await fetch(`${baseUrl}/auth/v1/verify`, {
+          const res = await smartFetch(`${baseUrl}/auth/v1/verify`, {
             method: 'POST',
             headers: { apikey: supabaseKey, 'Content-Type': 'application/json' },
             body: JSON.stringify(params)
@@ -293,7 +293,7 @@
       },
       async updateUser(attrs) {
         try {
-          const res = await fetch(`${baseUrl}/auth/v1/user`, {
+          const res = await smartFetch(`${baseUrl}/auth/v1/user`, {
             method: 'PUT',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(attrs)
@@ -396,7 +396,7 @@
             });
             if (pList.length) headers.Prefer = pList.join(',');
 
-            const res = await fetch(url, {
+            const res = await smartFetch(url, {
               method,
               headers,
               body: bodyPayload !== null ? JSON.stringify(bodyPayload) : undefined
@@ -605,7 +605,7 @@
       },
       async rpc(fnName, params) {
         try {
-          const res = await fetch(`${baseUrl}/rest/v1/rpc/${encodeURIComponent(fnName)}`, {
+          const res = await smartFetch(`${baseUrl}/rest/v1/rpc/${encodeURIComponent(fnName)}`, {
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(params || {})
@@ -626,7 +626,7 @@
                 const contentType = (opts && opts.contentType) || (blob && blob.type) || 'application/octet-stream';
                 const extraHeaders = { 'Content-Type': contentType };
                 if (opts && opts.upsert) extraHeaders['x-upsert'] = 'true';
-                const res = await fetch(
+                const res = await smartFetch(
                   `${baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${cleanPath}`,
                   {
                     method: 'POST',

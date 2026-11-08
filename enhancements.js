@@ -694,9 +694,51 @@
     enhanceMediaAndLinksV36();
   }
 
+  // 12. Вкладки-фильтры вложений чата в карточке собеседника/группы (Все / Фото / Кружки и голос / Файлы) (v59)
+  const sharedMediaTabs = document.getElementById('sharedMediaTabs');
+  const sharedMediaGrid = document.getElementById('sharedMediaGrid');
+  if (sharedMediaTabs && sharedMediaGrid) {
+    sharedMediaTabs.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-media-tab]');
+      if (!btn) return;
+      haptic('light');
+      const tab = btn.getAttribute('data-media-tab') || 'all';
+      sharedMediaTabs.querySelectorAll('[data-media-tab]').forEach((b) => {
+        b.classList.toggle('active', b === btn);
+      });
+      const items = Array.from(sharedMediaGrid.children);
+      let visibleCount = 0;
+      items.forEach((el) => {
+        if (el.classList.contains('shared-media-tab-empty')) return;
+        const kind = el.getAttribute('data-media-kind') || '';
+        if (!kind) return;
+        const show =
+          tab === 'all' ||
+          (tab === 'image' && kind === 'image') ||
+          (tab === 'voice_circle' && (kind === 'video_circle' || kind === 'voice')) ||
+          (tab === 'file' && kind === 'file');
+        el.style.display = show ? (el.tagName === 'IMG' ? 'block' : 'flex') : 'none';
+        if (show) visibleCount += 1;
+      });
+      let emptyNotice = sharedMediaGrid.querySelector('.shared-media-tab-empty');
+      if (visibleCount === 0) {
+        if (!emptyNotice) {
+          emptyNotice = document.createElement('div');
+          emptyNotice.className = 'shared-media-tab-empty';
+          emptyNotice.style.cssText = 'grid-column:1/-1; font-size:12.5px; color:var(--text-muted); padding:8px 0;';
+          sharedMediaGrid.appendChild(emptyNotice);
+        }
+        emptyNotice.textContent = 'В этой категории пока нет вложений.';
+        emptyNotice.style.display = 'block';
+      } else if (emptyNotice) {
+        emptyNotice.style.display = 'none';
+      }
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=58').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=59').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

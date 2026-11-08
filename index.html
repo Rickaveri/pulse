@@ -10,10 +10,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' rx='28' fill='%236366f1'/><polyline points='28,60 46,60 54,38 66,82 74,60 92,60' fill='none' stroke='white' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=58" />
+  <link rel="stylesheet" href="./styles.css?v=59" />
   <title>Pulse — Защищённый мессенджер</title>
-  <script src="./config.js?v=58"></script>
-  <script src="./supabase-local.js?v=58"></script>
+  <script src="./config.js?v=59"></script>
+  <script src="./supabase-local.js?v=59"></script>
 </head>
 <body>
 
@@ -506,7 +506,13 @@
       </div>
 
       <div id="sharedMediaSection" class="settings-section" style="text-align:left;">
-        <div class="settings-section-title">Вложения в этом чате (Фото и файлы)</div>
+        <div class="settings-section-title">Вложения и медиа в этом чате</div>
+        <div id="sharedMediaTabs" class="theme-pills" style="margin-bottom:8px; flex-wrap:wrap;">
+          <button type="button" class="theme-pill active" data-media-tab="all">Все</button>
+          <button type="button" class="theme-pill" data-media-tab="image">Фото</button>
+          <button type="button" class="theme-pill" data-media-tab="voice_circle">Кружки и голос</button>
+          <button type="button" class="theme-pill" data-media-tab="file">Файлы</button>
+        </div>
         <div id="sharedMediaGrid" class="shared-media-grid"></div>
       </div>
 
@@ -876,7 +882,7 @@
     </div>
   </div>
 
-  <script src="./app.js?v=58"></script>
-  <script src="./enhancements.js?v=58"></script>
+  <script src="./app.js?v=59"></script>
+  <script src="./enhancements.js?v=59"></script>
 </body>
 </html>
