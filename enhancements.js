@@ -1139,9 +1139,69 @@
     preloadObs.observe(lightboxImg, { attributes: true, attributeFilter: ['src'] });
   }
 
+  // =========================================================================
+  // 15. ОБНОВЛЕНИЕ v62:
+  // А) Защита от случайного закрытия вкладки во время активного звонка или записи кружочка/голосового
+  // Б) Быстрое форматирование выделенного текста в поле ввода (Cmd+B / Ctrl+B жирный, Cmd+I / Ctrl+I курсив)
+  // В) Перетаскивание увеличенного фото (Pan & Zoom) в полноэкранной галерее
+  // Г) Отображение количества символов при наборе длинного сообщения (> 200 симв.)
+  // =========================================================================
+
+  // А) Предупреждение при случайном закрытии вкладки во время звонка или записи
+  const callOverlayEl = document.getElementById('callOverlay');
+  const recordingBarEl = document.getElementById('recordingBar');
+  const videoCircleOverlayEl = document.getElementById('videoCircleOverlay');
+  window.addEventListener('beforeunload', (e) => {
+    const inCall = callOverlayEl && !callOverlayEl.classList.contains('hidden');
+    const inVoiceRec = recordingBarEl && !recordingBarEl.classList.contains('hidden');
+    const inVideoRec = videoCircleOverlayEl && !videoCircleOverlayEl.classList.contains('hidden');
+    if (inCall || inVoiceRec || inVideoRec) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
+  // Б) Быстрое оборачивание выделенного текста в **жирный** (Cmd/Ctrl+B) или *курсив* (Cmd/Ctrl+I)
+  if (messageInput) {
+    messageInput.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === 'b' || e.key.toLowerCase() === 'i')) {
+        const start = messageInput.selectionStart;
+        const end = messageInput.selectionEnd;
+        if (typeof start === 'number' && typeof end === 'number' && end > start) {
+          e.preventDefault();
+          const wrap = e.key.toLowerCase() === 'b' ? '**' : '*';
+          const val = messageInput.value;
+          const selected = val.slice(start, end);
+          messageInput.value = val.slice(0, start) + wrap + selected + wrap + val.slice(end);
+          messageInput.selectionStart = start + wrap.length;
+          messageInput.selectionEnd = end + wrap.length;
+          messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+    });
+  }
+
+  // В) Двойной тап для зума 2.2x на фото в полноэкранной галерее
+  let lbLastTap = 0;
+  let lbZoomed = false;
+  if (lightbox && lightboxImg) {
+    lightboxImg.addEventListener('touchend', (e) => {
+      const now = Date.now();
+      if (now - lbLastTap < 280) {
+        e.stopPropagation();
+        haptic('light');
+        lbZoomed = !lbZoomed;
+        lightboxImg.style.transform = lbZoomed ? 'scale(2.2)' : 'scale(1)';
+        lbLastTap = 0;
+      } else {
+        lbLastTap = now;
+      }
+    }, { passive: true });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=61').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=62').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

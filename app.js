@@ -2015,7 +2015,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = './supabase-local.js?v=61';
+      script.src = './supabase-local.js?v=62';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -4996,6 +4996,25 @@
       playBtn.textContent = '▶';
     });
 
+    // Запоминание секунды паузы на длинных голосовых сообщениях (> 12 сек) (v62)
+    const voiceResumeStorageKey = `pulse_vpos_${String(audioUrl || '').slice(-36)}`;
+    const savedVoiceSec = Number(localStorage.getItem(voiceResumeStorageKey) || 0);
+    if (savedVoiceSec > 2) {
+      audio.addEventListener('loadedmetadata', () => {
+        if (audio.duration > savedVoiceSec + 2) {
+          try {
+            audio.currentTime = savedVoiceSec;
+            durLabel.textContent = `${formatSec(savedVoiceSec)} / ${formatSec(Math.round(audio.duration))}`;
+          } catch (e) {}
+        }
+      }, { once: true });
+    }
+    audio.addEventListener('pause', () => {
+      if (!audio.ended && audio.currentTime > 3 && (audio.duration > 12 || knownTotalSec > 12)) {
+        try { localStorage.setItem(voiceResumeStorageKey, String(Math.floor(audio.currentTime))); } catch (e) {}
+      }
+    });
+
     const startVoicePlayback = () => {
       pauseOtherActiveMedia(audio);
       audio.playbackRate = speeds[speedIdx];
@@ -5007,7 +5026,10 @@
     audio.addEventListener('ended', () => {
       playBtn.textContent = '▶';
       if (activePlayingMediaEl === audio) activePlayingMediaEl = null;
-      try { audio.currentTime = 0; } catch (e) {}
+      try {
+        localStorage.removeItem(voiceResumeStorageKey);
+        audio.currentTime = 0;
+      } catch (e) {}
       barEls.forEach((b) => b.classList.remove('played'));
       durLabel.textContent = knownTotalSec > 0 ? formatSec(knownTotalSec) : '0:00';
       playNextSequentialMediaInChat(wrap);
@@ -8421,7 +8443,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=61').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=62').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});
