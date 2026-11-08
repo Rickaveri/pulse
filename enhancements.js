@@ -1293,14 +1293,52 @@
     lightbox.appendChild(topBar);
   }
 
-  // Б) Рисование маркером на фото перед отправкой (✏️ Маркер)
+  // Б) Рисование маркером на фото перед отправкой (✏️ Маркер + палитра цветов и сброс v64)
   const mediaPhotoTools = document.getElementById('mediaPhotoTools');
+  let activeMarkerColor = '#ef4444';
+  let originalPhotoBlobUrl = '';
   if (mediaPhotoTools && mediaPreviewImg) {
     const drawMarkerBtn = document.createElement('button');
     drawMarkerBtn.type = 'button';
     drawMarkerBtn.className = 'theme-pill';
     drawMarkerBtn.textContent = '✏️ Маркер';
     mediaPhotoTools.appendChild(drawMarkerBtn);
+
+    const paletteBar = document.createElement('div');
+    paletteBar.className = 'marker-palette-bar hidden';
+    const colors = [
+      { hex: '#ef4444', title: 'Красный маркер' },
+      { hex: '#facc15', title: 'Жёлтый маркер' },
+      { hex: '#10b981', title: 'Зелёный маркер' },
+      { hex: '#38bdf8', title: 'Голубой маркер' }
+    ];
+    colors.forEach((c, idx) => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = `marker-color-dot ${idx === 0 ? 'active' : ''}`;
+      dot.style.background = c.hex;
+      dot.title = c.title;
+      dot.addEventListener('click', () => {
+        haptic('light');
+        activeMarkerColor = c.hex;
+        paletteBar.querySelectorAll('.marker-color-dot').forEach((d) => d.classList.toggle('active', d === dot));
+      });
+      paletteBar.appendChild(dot);
+    });
+
+    const resetPhotoBtn = document.createElement('button');
+    resetPhotoBtn.type = 'button';
+    resetPhotoBtn.className = 'theme-pill';
+    resetPhotoBtn.style.cssText = 'flex:0 0 auto; padding:4px 10px; font-size:11.5px;';
+    resetPhotoBtn.textContent = '↩️ Сброс';
+    resetPhotoBtn.addEventListener('click', () => {
+      if (!originalPhotoBlobUrl) return;
+      haptic('light');
+      mediaPreviewImg.dataset.isEdited = '';
+      mediaPreviewImg.src = originalPhotoBlobUrl;
+    });
+    paletteBar.appendChild(resetPhotoBtn);
+    mediaPhotoTools.parentElement.insertBefore(paletteBar, mediaPhotoTools.nextSibling);
 
     let isDrawingMode = false;
     let isPointerDrawing = false;
@@ -1309,8 +1347,14 @@
       isDrawingMode = false;
       drawMarkerBtn.classList.remove('active');
       drawMarkerBtn.textContent = '✏️ Маркер';
+      paletteBar.classList.add('hidden');
       mediaPreviewImg.style.touchAction = '';
       mediaPreviewImg.style.cursor = '';
+      setTimeout(() => {
+        if (mediaPreviewImg.src && !mediaPreviewImg.dataset.isEdited) {
+          originalPhotoBlobUrl = mediaPreviewImg.src;
+        }
+      }, 40);
     };
 
     if (attachmentInput) {
@@ -1319,10 +1363,12 @@
 
     drawMarkerBtn.addEventListener('click', () => {
       if (!mediaPreviewImg.src || mediaPreviewImg.classList.contains('hidden')) return;
+      if (!originalPhotoBlobUrl) originalPhotoBlobUrl = mediaPreviewImg.src;
       haptic('light');
       isDrawingMode = !isDrawingMode;
       drawMarkerBtn.classList.toggle('active', isDrawingMode);
-      drawMarkerBtn.textContent = isDrawingMode ? '✏️ Рисуйте по фото' : '✏️ Маркер';
+      drawMarkerBtn.textContent = isDrawingMode ? '✏️ Рисуйте' : '✏️ Маркер';
+      paletteBar.classList.toggle('hidden', !isDrawingMode);
       mediaPreviewImg.style.touchAction = isDrawingMode ? 'none' : '';
       mediaPreviewImg.style.cursor = isDrawingMode ? 'crosshair' : '';
     });
@@ -1349,7 +1395,7 @@
         canvas.height = img.height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
-        ctx.strokeStyle = '#ef4444';
+        ctx.strokeStyle = activeMarkerColor;
         ctx.lineWidth = Math.max(4, Math.round(Math.min(img.width, img.height) * 0.014));
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -1388,7 +1434,7 @@
     mediaPreviewImg.addEventListener('pointercancel', endDraw);
   }
 
-  // В) Живой счётчик найденных сообщений при поиске внутри диалога (#chatSearchBar)
+  // В) Живой счётчик найденных сообщений и подсветка совпадений при поиске внутри диалога (#chatSearchBar)
   const chatSearchBarEl = document.getElementById('chatSearchBar');
   const chatSearchInputEl = document.getElementById('chatSearchInput');
   const chatSearchCloseBtnEl = document.getElementById('chatSearchCloseBtn');
@@ -1397,17 +1443,54 @@
     matchPill.className = 'search-match-pill hidden';
     chatSearchBarEl.insertBefore(matchPill, chatSearchCloseBtnEl);
 
+    const highlightSearchTermsInChat = (query) => {
+      if (!messagesViewport || !query) return;
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(${escaped})`, 'gi');
+      messagesViewport.querySelectorAll('.msg-bubble').forEach((bubble) => {
+        if (bubble.querySelector('.voice-player, video, .game-visual-card')) return;
+        const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, null);
+        const tNodes = [];
+        let n;
+        while ((n = walker.nextNode())) {
+          if (n.parentElement && !n.parentElement.closest('.msg-meta, .msg-reply-quote, .search-hit-mark')) {
+            tNodes.push(n);
+          }
+        }
+        tNodes.forEach((tNode) => {
+          const val = tNode.nodeValue || '';
+          if (!regex.test(val)) return;
+          regex.lastIndex = 0;
+          const parts = val.split(regex);
+          if (parts.length <= 1 || !tNode.parentNode) return;
+          const frag = document.createDocumentFragment();
+          parts.forEach((part, idx) => {
+            if (idx % 2 === 1) {
+              const mark = document.createElement('mark');
+              mark.className = 'search-hit-mark';
+              mark.textContent = part;
+              frag.appendChild(mark);
+            } else if (part) {
+              frag.appendChild(document.createTextNode(part));
+            }
+          });
+          tNode.parentNode.replaceChild(frag, tNode);
+        });
+      });
+    };
+
     const updateSearchMatchCount = () => {
       const q = (chatSearchInputEl.value || '').trim();
       if (!q || chatSearchBarEl.classList.contains('hidden')) {
         matchPill.classList.add('hidden');
         return;
       }
-      requestAnimationFrame(() => {
+      setTimeout(() => {
         const count = messagesViewport ? messagesViewport.querySelectorAll('.msg-row').length : 0;
         matchPill.textContent = `Найдено: ${count}`;
         matchPill.classList.remove('hidden');
-      });
+        highlightSearchTermsInChat(q);
+      }, 25);
     };
 
     chatSearchInputEl.addEventListener('input', updateSearchMatchCount);
@@ -1433,9 +1516,68 @@
     messageInput.addEventListener('input', syncCharBadge);
   }
 
+  // =========================================================================
+  // 17. ОБНОВЛЕНИЕ v64:
+  // А) Быстрая вставка скриншотов и изображений в чат прямо из буфера обмена (Cmd+V / Ctrl+V)
+  // Б) Палитра из 4 цветов маркера (🔴 🟡 🟢 🔵) и кнопка «↩️ Сброс» при рисовании на фото
+  // В) Подсветка найденного слова жёлтым маркером внутри сообщений при поиске по чату
+  // Г) Переключение камеры по двойному тапу на видеокружочек во время записи
+  // =========================================================================
+
+  // А) Отправка скриншотов и картинок из буфера обмена (Cmd+V / Ctrl+V / Вставить)
+  const activeChatViewEl = document.getElementById('activeChatView');
+  window.addEventListener('paste', (e) => {
+    if (!activeChatViewEl || activeChatViewEl.classList.contains('hidden') || !attachmentInput) return;
+    const cd = e.clipboardData;
+    if (!cd) return;
+    let pastedFile = null;
+    if (cd.files && cd.files.length > 0) {
+      pastedFile = cd.files[0];
+    } else if (cd.items) {
+      for (let i = 0; i < cd.items.length; i++) {
+        const item = cd.items[i];
+        if (item.kind === 'file') {
+          pastedFile = item.getAsFile();
+          break;
+        }
+      }
+    }
+    if (!pastedFile) return;
+    e.preventDefault();
+    haptic('medium');
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(pastedFile);
+      attachmentInput.files = dt.files;
+      attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (err) {}
+  });
+
+  // Г) Двойной тап по превью видеокружочка во время записи -> быстрое переключение камеры
+  const vcPreviewEl = document.getElementById('videoCirclePreview');
+  const vcFlipBtnEl = document.getElementById('vcFlipCamBtn');
+  let lastVcTap = 0;
+  if (vcPreviewEl && vcFlipBtnEl) {
+    vcPreviewEl.addEventListener('touchend', (e) => {
+      const now = Date.now();
+      if (now - lastVcTap < 300) {
+        e.preventDefault();
+        haptic('light');
+        vcFlipBtnEl.click();
+        lastVcTap = 0;
+      } else {
+        lastVcTap = now;
+      }
+    }, { passive: false });
+    vcPreviewEl.addEventListener('dblclick', () => {
+      haptic('light');
+      vcFlipBtnEl.click();
+    });
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=63').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=64').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });

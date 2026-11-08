@@ -3276,3 +3276,36 @@ body.keyboard-open .composer {
   z-index: 20;
 }
 
+/* v64: Палитра цветов маркера на фото, отмена штриха и подсветка найденных слов в поиске */
+.marker-palette-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.marker-color-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease;
+}
+
+.marker-color-dot.active {
+  border-color: #ffffff;
+  transform: scale(1.18);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+}
+
+.search-hit-mark {
+  background: rgba(250, 204, 21, 0.38);
+  color: inherit;
+  border-radius: 4px;
+  padding: 0 3px;
+  font-weight: 700;
+}
+
+

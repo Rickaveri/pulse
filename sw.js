@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pulse-pwa-v63';
+const CACHE_NAME = 'pulse-pwa-v64';
 const SUPABASE_URL = 'https://tdvpxxpnyinjzirizxea.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uiEi-rt3J7ZCeGKrskZy2w_FVoVMNPV';
 const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aObq6osNkyamzIRi6FwdLZeTbh0yV65gqmb5Y';
@@ -6,11 +6,11 @@ const VAPID_PUBLIC_B64U = 'BNx408mM4zlTTpxhdNA04JuZ7Ajn_Av9KylLpdioUucSkA6qn_aOb
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=63',
-  './config.js?v=63',
-  './supabase-local.js?v=63',
-  './app.js?v=63',
-  './enhancements.js?v=63',
+  './styles.css?v=64',
+  './config.js?v=64',
+  './supabase-local.js?v=64',
+  './app.js?v=64',
+  './enhancements.js?v=64',
   './manifest.json'
 ];
 
