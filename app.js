@@ -2015,7 +2015,7 @@
     if (supabaseClient || initSupabase()) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = './supabase-local.js?v=62';
+      script.src = './supabase-local.js?v=63';
       script.onload = () => resolve(initSupabase());
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
@@ -5264,6 +5264,7 @@
 
     if (file.type.startsWith('image/')) {
       mediaPreviewTitle.textContent = 'Отправить фотографию';
+      mediaPreviewImg.dataset.isEdited = '';
       mediaPreviewImg.src = URL.createObjectURL(file);
       mediaPreviewImg.classList.remove('hidden');
       mediaPreviewFileBox.classList.add('hidden');
@@ -5288,7 +5289,13 @@
   if (confirmSendMediaBtn) {
     confirmSendMediaBtn.addEventListener('click', async () => {
       if (!pendingAttachmentFile || !activeRoom) return;
-      const file = pendingAttachmentFile;
+      let file = pendingAttachmentFile;
+      if (file.type.startsWith('image/') && mediaPreviewImg && mediaPreviewImg.dataset.isEdited === '1' && mediaPreviewImg.src.startsWith('blob:')) {
+        try {
+          const editedBlob = await fetch(mediaPreviewImg.src).then((r) => r.blob());
+          file = new File([editedBlob], `photo_${Date.now()}.jpg`, { type: 'image/jpeg' });
+        } catch (e) {}
+      }
       const captionText = mediaCaptionInput.value.trim();
       pendingAttachmentFile = null;
       mediaPreviewModal.classList.add('hidden');
@@ -8443,7 +8450,7 @@
       }
     });
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=62').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=63').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             reg.update().catch(() => {});

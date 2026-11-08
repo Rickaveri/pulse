@@ -105,6 +105,7 @@
       canvas.toBlob((blob) => {
         if (!blob) return;
         const editedFile = new File([blob], `photo_${Date.now()}.jpg`, { type: 'image/jpeg' });
+        mediaPreviewImg.dataset.isEdited = '1';
         mediaPreviewImg.src = URL.createObjectURL(blob);
         if (attachmentInput) {
           try {
@@ -1199,9 +1200,242 @@
     }, { passive: true });
   }
 
+  // =========================================================================
+  // 16. ОБНОВЛЕНИЕ v63:
+  // А) Верхняя панель в полноэкранной галерее (🔍 Зум, 💾 Скачать, ✕ Закрыть) + зум колёсиком мыши
+  // Б) Рисование маркером на фото перед отправкой (✏️ Маркер в окне предпросмотра)
+  // В) Живой счётчик совпадений при поиске внутри диалога (Найдено: N)
+  // Г) Счётчик символов при наборе длинного сообщения (от 200 символов)
+  // =========================================================================
+
+  // А) Панель инструментов в полноэкранной фотогалерее (#lightbox)
+  let lbScale = 1;
+  if (lightbox && lightboxImg) {
+    const topBar = document.createElement('div');
+    topBar.className = 'lb-top-toolbar';
+
+    const zoomBtn = document.createElement('button');
+    zoomBtn.type = 'button';
+    zoomBtn.className = 'lb-tool-btn';
+    zoomBtn.title = 'Увеличить / уменьшить фото';
+    zoomBtn.textContent = '🔍';
+
+    const dlBtn = document.createElement('button');
+    dlBtn.type = 'button';
+    dlBtn.className = 'lb-tool-btn';
+    dlBtn.title = 'Скачать фото';
+    dlBtn.textContent = '💾';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'lb-tool-btn';
+    closeBtn.title = 'Закрыть просмотр';
+    closeBtn.textContent = '✕';
+
+    zoomBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      haptic('light');
+      lbScale = lbScale > 1.1 ? 1 : 2.2;
+      lbZoomed = lbScale > 1.1;
+      lightboxImg.style.transition = 'transform 0.18s ease';
+      lightboxImg.style.transform = `scale(${lbScale})`;
+    });
+
+    dlBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      haptic('medium');
+      const src = lightboxImg.src;
+      if (!src) return;
+      try {
+        const res = await fetch(src);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `pulse_photo_${Date.now()}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      } catch (err) {
+        const a = document.createElement('a');
+        a.href = src;
+        a.target = '_blank';
+        a.download = `pulse_photo_${Date.now()}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    });
+
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      haptic('light');
+      lbScale = 1;
+      lbZoomed = false;
+      lightboxImg.style.transform = 'scale(1)';
+      lightbox.classList.add('hidden');
+    });
+
+    lightbox.addEventListener('wheel', (e) => {
+      if (lightbox.classList.contains('hidden')) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.25 : -0.25;
+      lbScale = Math.min(3.2, Math.max(1, lbScale + delta));
+      lbZoomed = lbScale > 1.1;
+      lightboxImg.style.transition = 'transform 0.08s ease';
+      lightboxImg.style.transform = `scale(${lbScale})`;
+    }, { passive: false });
+
+    topBar.appendChild(zoomBtn);
+    topBar.appendChild(dlBtn);
+    topBar.appendChild(closeBtn);
+    lightbox.appendChild(topBar);
+  }
+
+  // Б) Рисование маркером на фото перед отправкой (✏️ Маркер)
+  const mediaPhotoTools = document.getElementById('mediaPhotoTools');
+  if (mediaPhotoTools && mediaPreviewImg) {
+    const drawMarkerBtn = document.createElement('button');
+    drawMarkerBtn.type = 'button';
+    drawMarkerBtn.className = 'theme-pill';
+    drawMarkerBtn.textContent = '✏️ Маркер';
+    mediaPhotoTools.appendChild(drawMarkerBtn);
+
+    let isDrawingMode = false;
+    let isPointerDrawing = false;
+
+    const resetMarkerMode = () => {
+      isDrawingMode = false;
+      drawMarkerBtn.classList.remove('active');
+      drawMarkerBtn.textContent = '✏️ Маркер';
+      mediaPreviewImg.style.touchAction = '';
+      mediaPreviewImg.style.cursor = '';
+    };
+
+    if (attachmentInput) {
+      attachmentInput.addEventListener('change', resetMarkerMode);
+    }
+
+    drawMarkerBtn.addEventListener('click', () => {
+      if (!mediaPreviewImg.src || mediaPreviewImg.classList.contains('hidden')) return;
+      haptic('light');
+      isDrawingMode = !isDrawingMode;
+      drawMarkerBtn.classList.toggle('active', isDrawingMode);
+      drawMarkerBtn.textContent = isDrawingMode ? '✏️ Рисуйте по фото' : '✏️ Маркер';
+      mediaPreviewImg.style.touchAction = isDrawingMode ? 'none' : '';
+      mediaPreviewImg.style.cursor = isDrawingMode ? 'crosshair' : '';
+    });
+
+    let strokePoints = [];
+    const getRelCoords = (ev) => {
+      const rect = mediaPreviewImg.getBoundingClientRect();
+      const clientX = ev.touches && ev.touches[0] ? ev.touches[0].clientX : ev.clientX;
+      const clientY = ev.touches && ev.touches[0] ? ev.touches[0].clientY : ev.clientY;
+      return {
+        x: Math.max(0, Math.min(1, (clientX - rect.left) / (rect.width || 1))),
+        y: Math.max(0, Math.min(1, (clientY - rect.top) / (rect.height || 1)))
+      };
+    };
+
+    const commitStrokeToImage = () => {
+      if (strokePoints.length < 2 || !mediaPreviewImg.src) return;
+      const pts = [...strokePoints];
+      strokePoints = [];
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = Math.max(4, Math.round(Math.min(img.width, img.height) * 0.014));
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x * img.width, pts[0].y * img.height);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i].x * img.width, pts[i].y * img.height);
+        }
+        ctx.stroke();
+        canvas.toBlob((blob) => {
+          if (!blob) return;
+          mediaPreviewImg.dataset.isEdited = '1';
+          mediaPreviewImg.src = URL.createObjectURL(blob);
+        }, 'image/jpeg', 0.92);
+      };
+      img.src = mediaPreviewImg.src;
+    };
+
+    mediaPreviewImg.addEventListener('pointerdown', (e) => {
+      if (!isDrawingMode) return;
+      e.preventDefault();
+      isPointerDrawing = true;
+      strokePoints = [getRelCoords(e)];
+    });
+    mediaPreviewImg.addEventListener('pointermove', (e) => {
+      if (!isDrawingMode || !isPointerDrawing) return;
+      e.preventDefault();
+      strokePoints.push(getRelCoords(e));
+    });
+    const endDraw = () => {
+      if (!isPointerDrawing) return;
+      isPointerDrawing = false;
+      commitStrokeToImage();
+    };
+    mediaPreviewImg.addEventListener('pointerup', endDraw);
+    mediaPreviewImg.addEventListener('pointercancel', endDraw);
+  }
+
+  // В) Живой счётчик найденных сообщений при поиске внутри диалога (#chatSearchBar)
+  const chatSearchBarEl = document.getElementById('chatSearchBar');
+  const chatSearchInputEl = document.getElementById('chatSearchInput');
+  const chatSearchCloseBtnEl = document.getElementById('chatSearchCloseBtn');
+  if (chatSearchBarEl && chatSearchInputEl && chatSearchCloseBtnEl) {
+    const matchPill = document.createElement('span');
+    matchPill.className = 'search-match-pill hidden';
+    chatSearchBarEl.insertBefore(matchPill, chatSearchCloseBtnEl);
+
+    const updateSearchMatchCount = () => {
+      const q = (chatSearchInputEl.value || '').trim();
+      if (!q || chatSearchBarEl.classList.contains('hidden')) {
+        matchPill.classList.add('hidden');
+        return;
+      }
+      requestAnimationFrame(() => {
+        const count = messagesViewport ? messagesViewport.querySelectorAll('.msg-row').length : 0;
+        matchPill.textContent = `Найдено: ${count}`;
+        matchPill.classList.remove('hidden');
+      });
+    };
+
+    chatSearchInputEl.addEventListener('input', updateSearchMatchCount);
+    chatSearchCloseBtnEl.addEventListener('click', () => matchPill.classList.add('hidden'));
+  }
+
+  // Г) Компактный счётчик длины текста при наборе длинного сообщения (от 200 символов)
+  const composerFooter = document.querySelector('footer.composer');
+  if (messageInput && composerFooter) {
+    const charBadge = document.createElement('div');
+    charBadge.className = 'composer-char-badge hidden';
+    composerFooter.appendChild(charBadge);
+
+    const syncCharBadge = () => {
+      const len = (messageInput.value || '').length;
+      if (len >= 200) {
+        charBadge.textContent = `${len} симв.`;
+        charBadge.classList.remove('hidden');
+      } else {
+        charBadge.classList.add('hidden');
+      }
+    };
+    messageInput.addEventListener('input', syncCharBadge);
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=62').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=63').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });
