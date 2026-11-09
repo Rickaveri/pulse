@@ -1575,9 +1575,148 @@
     });
   }
 
+  // =========================================================================
+  // 18. ОБНОВЛЕНИЕ v65:
+  // А) Автоматическое сворачивание очень длинных сообщений (> 650 символов) с кнопкой «Показать полностью ▾ / Свернуть ▴»
+  // Б) Интерактивные теги @username внутри текста сообщений (тап по @username сразу ищет или открывает контакт)
+  // В) Кнопка «📋 Копировать фото» в верхней панели полноэкранной галереи (#lightbox)
+  // =========================================================================
+
+  // А + Б) Сворачивание длинных текстов и кликабельные @username в пузырьках сообщений
+  const searchInputSidebar = document.getElementById('searchInput');
+  const mobileBackBtnEl = document.getElementById('mobileBackBtn');
+
+  function decorateLongTextsAndMentionsV65() {
+    if (!messagesViewport) return;
+    messagesViewport.querySelectorAll('.msg-bubble:not([data-v65-ready])').forEach((bubble) => {
+      bubble.setAttribute('data-v65-ready', '1');
+      if (bubble.querySelector('.voice-player, video, .game-visual-card, .poll-card, .checklist-card')) return;
+
+      // 1) Кликабельные упоминания @username
+      const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, null);
+      const tNodes = [];
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.parentElement && !n.parentElement.closest('.msg-meta, .msg-reply-quote, a, code, .mention-tag-chip')) {
+          tNodes.push(n);
+        }
+      }
+      tNodes.forEach((tNode) => {
+        const val = tNode.nodeValue || '';
+        if (!/(?:^|\s)@[a-zA-Z0-9_.]{3,28}\b/.test(val)) return;
+        const parts = val.split(/(@[a-zA-Z0-9_.]{3,28}\b)/g);
+        if (parts.length <= 1 || !tNode.parentNode) return;
+        const frag = document.createDocumentFragment();
+        parts.forEach((part) => {
+          if (/^@[a-zA-Z0-9_.]{3,28}$/.test(part)) {
+            const chip = document.createElement('span');
+            chip.className = 'mention-tag-chip';
+            chip.title = `Найти или открыть диалог с ${part}`;
+            chip.textContent = part;
+            chip.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              haptic('light');
+              if (window.innerWidth <= 768 && mobileBackBtnEl) {
+                mobileBackBtnEl.click();
+              }
+              if (searchInputSidebar) {
+                searchInputSidebar.value = part;
+                searchInputSidebar.dispatchEvent(new Event('input', { bubbles: true }));
+                searchInputSidebar.focus();
+              }
+              showQuickToast('🔎 Поиск контакта', `Ищем пользователя ${part}`);
+            });
+            frag.appendChild(chip);
+          } else if (part) {
+            frag.appendChild(document.createTextNode(part));
+          }
+        });
+        tNode.parentNode.replaceChild(frag, tNode);
+      });
+
+      // 2) Аккуратное сворачивание очень длинных сообщений (> 650 символов)
+      const textDivs = Array.from(bubble.children).filter(
+        (el) =>
+          el.tagName === 'DIV' &&
+          !el.classList.contains('msg-meta') &&
+          !el.classList.contains('msg-reply-quote') &&
+          !el.classList.contains('msg-translation-box')
+      );
+      const bodyDiv = textDivs[textDivs.length - 1];
+      if (bodyDiv && (bodyDiv.textContent || '').trim().length > 650) {
+        bodyDiv.classList.add('msg-long-clamp');
+        const toggleBtn = document.createElement('button');
+        toggleBtn.type = 'button';
+        toggleBtn.className = 'msg-readmore-btn';
+        toggleBtn.textContent = 'Показать полностью ▾';
+        toggleBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          haptic('light');
+          const clamped = bodyDiv.classList.toggle('msg-long-clamp');
+          toggleBtn.textContent = clamped ? 'Показать полностью ▾' : 'Свернуть ▴';
+        });
+        const metaEl = bubble.querySelector('.msg-meta');
+        if (metaEl) bubble.insertBefore(toggleBtn, metaEl);
+        else bubble.appendChild(toggleBtn);
+      }
+    });
+  }
+
+  if (messagesViewport && 'MutationObserver' in window) {
+    const v65Obs = new MutationObserver(() => {
+      requestAnimationFrame(decorateLongTextsAndMentionsV65);
+    });
+    v65Obs.observe(messagesViewport, { childList: true });
+    decorateLongTextsAndMentionsV65();
+  }
+
+  // В) Кнопка «📋» (Копировать фото или ссылку) в верхней панели полноэкранной галереи (#lightbox)
+  if (lightbox && lightboxImg) {
+    const topBar = lightbox.querySelector('.lb-top-toolbar');
+    if (topBar) {
+      const copyImgBtn = document.createElement('button');
+      copyImgBtn.type = 'button';
+      copyImgBtn.className = 'lb-tool-btn';
+      copyImgBtn.title = 'Скопировать фото в буфер обмена';
+      copyImgBtn.textContent = '📋';
+      copyImgBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        haptic('medium');
+        const src = lightboxImg.src;
+        if (!src) return;
+        try {
+          if (navigator.clipboard && window.ClipboardItem) {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            await new Promise((res, rej) => {
+              img.onload = res;
+              img.onerror = rej;
+              img.src = src;
+            });
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || img.width;
+            canvas.height = img.naturalHeight || img.height;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            const pngBlob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+            if (pngBlob) {
+              await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+              showQuickToast('📋 Фото скопировано', 'Изображение скопировано в буфер обмена');
+              return;
+            }
+          }
+        } catch (err) {}
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(src).catch(() => {});
+          showQuickToast('📋 Ссылка скопирована', 'Ссылка на фото скопирована в буфер обмена');
+        }
+      });
+      topBar.insertBefore(copyImgBtn, topBar.lastElementChild);
+    }
+  }
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=64').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=65').then((reg) => {
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
         });
